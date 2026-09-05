@@ -125,7 +125,7 @@ def test_plan_rejects_identical_endpoints(feed_zip, capsys):
     code = main(["plan", str(feed_zip), "--from", "A", "--to", "A",
                  "--at", "08:00", "--quiet"])
     assert code == 1
-    assert "same stop" in capsys.readouterr().err
+    assert "same place" in capsys.readouterr().err
 
 
 def test_plan_reports_when_nothing_is_reachable(feed_zip, capsys):
@@ -148,3 +148,128 @@ def test_benchmark_runs(feed_zip, capsys):
     assert code == 0
     out = capsys.readouterr().out
     assert "median" in out and "p95" in out
+
+
+# --------------------------------------------------------------------- #
+# Station grouping and calendar exceptions
+
+def test_places_group_platforms_under_a_parent_station(tmp_path):
+    """A station's platforms must resolve as one place, not compete as many."""
+    from transitrouter.gtfs.loader import load_feed
+    from transitrouter.routing.places import build_places, resolve
+
+    d = tmp_path / "feed"
+    d.mkdir()
+    (d / "stops.txt").write_text(
+        "stop_id,stop_name,stop_lat,stop_lon,location_type,parent_station\n"
+        "HUR,Hurdman Station,45.4120,-75.6650,1,\n"
+        "HUR1,Hurdman Platform 1,45.4121,-75.6651,0,HUR\n"
+        "HUR2,Hurdman Platform 2,45.4122,-75.6652,0,HUR\n"
+        "HUR3,Hurdman Platform 3,45.4123,-75.6653,0,HUR\n"
+    )
+    (d / "routes.txt").write_text("route_id,route_short_name,route_long_name,route_type\nR,1,One,3\n")
+    (d / "trips.txt").write_text("trip_id,route_id,service_id\nT,R,S\n")
+    (d / "stop_times.txt").write_text(
+        "trip_id,arrival_time,departure_time,stop_id,stop_sequence\n"
+        "T,08:00:00,08:00:00,HUR1,0\nT,08:10:00,08:10:00,HUR2,1\n"
+    )
+
+    feed = load_feed(d)
+    places = build_places(feed)
+    hurdman = resolve(feed, places, "Hurdman Station")
+    assert hurdman is not None
+    assert hurdman.platform_count == 3
+    assert set(hurdman.stop_ids) == {"HUR1", "HUR2", "HUR3"}
+
+
+def test_a_raw_stop_id_resolves_to_its_place(tmp_path, sample_feed_dir):
+    from transitrouter.gtfs.loader import load_feed
+    from transitrouter.routing.places import build_places, resolve
+
+    feed = load_feed(sample_feed_dir)
+    places = build_places(feed)
+    assert resolve(feed, places, "A").stop_ids == ["A"]
+
+
+def test_same_name_stops_far_apart_stay_separate(tmp_path):
+    """Feeds reuse street names down a whole corridor. Distance splits them."""
+    from transitrouter.gtfs.loader import load_feed
+    from transitrouter.routing.places import build_places
+
+    d = tmp_path / "feed"
+    d.mkdir()
+    (d / "stops.txt").write_text(
+        "stop_id,stop_name,stop_lat,stop_lon\n"
+        "N1,Bank,45.4000,-75.6900\n"
+        "N2,Bank,45.4001,-75.6901\n"       # ~14 m away — same place
+        "F1,Bank,45.4300,-75.6900\n"       # ~3.3 km away — different place
+    )
+    (d / "routes.txt").write_text("route_id,route_short_name,route_long_name,route_type\nR,1,One,3\n")
+    (d / "trips.txt").write_text("trip_id,route_id,service_id\nT,R,S\n")
+    (d / "stop_times.txt").write_text(
+        "trip_id,arrival_time,departure_time,stop_id,stop_sequence\n"
+        "T,08:00:00,08:00:00,N1,0\nT,08:10:00,08:10:00,F1,1\n"
+    )
+
+    places = build_places(load_feed(d))
+    sizes = sorted(p.platform_count for p in places.values())
+    assert sizes == [1, 2]
+
+
+def test_calendar_dates_removes_service_on_a_holiday(sample_feed_dir):
+    """A statutory holiday cancels the weekday service. Honour it."""
+    from datetime import date
+
+    from transitrouter.gtfs.loader import load_feed
+    from transitrouter.routing.timetable import build_timetable
+
+    (sample_feed_dir / "calendar_dates.txt").write_text(
+        "service_id,date,exception_type\nWEEKDAY,20260707,2\n"
+    )
+    feed = load_feed(sample_feed_dir)
+
+    normal = build_timetable(feed, on_date=date(2026, 7, 6))    # Monday
+    holiday = build_timetable(feed, on_date=date(2026, 7, 7))   # Tuesday, cancelled
+    assert sum(len(r) for r in normal.routes) == 13
+    assert sum(len(r) for r in holiday.routes) == 0
+
+
+def test_calendar_dates_adds_service_on_an_extra_day(sample_feed_dir):
+    from datetime import date
+
+    from transitrouter.gtfs.loader import load_feed
+    from transitrouter.routing.timetable import build_timetable
+
+    (sample_feed_dir / "calendar_dates.txt").write_text(
+        "service_id,date,exception_type\nWEEKDAY,20260711,1\n"
+    )
+    feed = load_feed(sample_feed_dir)
+    saturday = build_timetable(feed, on_date=date(2026, 7, 11))
+    # The weekday trips are added on top of the normal weekend one.
+    assert sum(len(r) for r in saturday.routes) == 14
+
+
+def test_service_dates_respect_the_feed_validity_window(sample_feed_dir):
+    """A date outside start_date..end_date runs nothing."""
+    from datetime import date
+
+    from transitrouter.gtfs.loader import load_feed
+    from transitrouter.routing.timetable import build_timetable
+
+    feed = load_feed(sample_feed_dir)
+    expired = build_timetable(feed, on_date=date(2030, 1, 7))
+    assert sum(len(r) for r in expired.routes) == 0
+
+
+def test_plan_accepts_an_explicit_date(feed_zip, capsys):
+    code = main(["plan", str(feed_zip), "--from", "A", "--to", "E",
+                 "--at", "08:00", "--date", "2026-07-06", "--quiet"])
+    assert code == 0
+    assert "2026-07-06" in capsys.readouterr().out
+
+
+def test_plan_rejects_an_unreadable_date(feed_zip, capsys):
+    code = main(["plan", str(feed_zip), "--from", "A", "--to", "E",
+                 "--date", "next tuesday", "--quiet"])
+    assert code == 2
+    assert "unreadable date" in capsys.readouterr().err

@@ -19,6 +19,7 @@ import io
 import zipfile
 from collections import defaultdict
 from dataclasses import dataclass, field
+from datetime import date
 from pathlib import Path
 
 # GTFS files this router actually reads. Anything else in the zip is ignored.
@@ -51,6 +52,17 @@ def parse_time(value: str) -> int:
     return h * 3600 + m * 60 + s
 
 
+def parse_date(value: str) -> date | None:
+    """GTFS dates are ``YYYYMMDD``. Returns None for a blank or malformed one."""
+    value = value.strip()
+    if len(value) != 8 or not value.isdigit():
+        return None
+    try:
+        return date(int(value[:4]), int(value[4:6]), int(value[6:8]))
+    except ValueError:
+        return None
+
+
 def format_time(seconds: int) -> str:
     """Inverse of :func:`parse_time`, keeping hours past 24 visible."""
     if seconds < 0:
@@ -67,6 +79,15 @@ class Stop:
     lat: float
     lon: float
     parent: str = ""
+    # GTFS location_type: 0 is a boarding point, 1 is a parent station, and
+    # 2-4 are entrances, generic nodes and boarding areas. Only 0 can be
+    # ridden from, and conflating a station with its platforms produces a
+    # place that swallows its own members.
+    location_type: int = 0
+
+    @property
+    def is_boardable(self) -> bool:
+        return self.location_type == 0
 
     def __repr__(self) -> str:  # keeps test failures readable
         return f"Stop({self.id}, {self.name!r})"
@@ -102,16 +123,61 @@ class Trip:
 
 
 @dataclass
+class Service:
+    """When a service runs: a weekly pattern plus per-date exceptions.
+
+    ``calendar.txt`` gives the pattern; ``calendar_dates.txt`` overrides it
+    on specific days. Agencies lean on the exceptions heavily — statutory
+    holidays typically remove the weekday service and add a Sunday one — so
+    a router that reads only the weekly pattern gets holidays wrong in both
+    directions. Some feeds skip ``calendar.txt`` entirely and express every
+    single service day as an addition.
+    """
+
+    id: str
+    weekdays: set[int] = field(default_factory=set)  # 0=Monday
+    start: date | None = None
+    end: date | None = None
+    added: set[date] = field(default_factory=set)
+    removed: set[date] = field(default_factory=set)
+
+    def runs_on(self, day: date) -> bool:
+        if day in self.removed:
+            return False
+        if day in self.added:
+            return True
+        if self.start and day < self.start:
+            return False
+        if self.end and day > self.end:
+            return False
+        return day.weekday() in self.weekdays
+
+
+@dataclass
 class Feed:
     """A parsed GTFS feed."""
 
     stops: dict[str, Stop] = field(default_factory=dict)
     routes: dict[str, Route] = field(default_factory=dict)
     trips: dict[str, Trip] = field(default_factory=dict)
-    # service_id -> set of weekday indices (0=Monday) it runs on
-    service_days: dict[str, set[int]] = field(default_factory=dict)
+    services: dict[str, Service] = field(default_factory=dict)
     # Explicit transfers declared by the agency, (from, to) -> seconds
     declared_transfers: dict[tuple[str, str], int] = field(default_factory=dict)
+
+    @property
+    def service_days(self) -> dict[str, set[int]]:
+        """Weekly patterns only. Kept for callers that ignore exceptions."""
+        return {sid: s.weekdays for sid, s in self.services.items()}
+
+    def runs_on(self, service_id: str, day: date) -> bool:
+        """Whether a service operates on a given date.
+
+        An unknown service_id is treated as running. Feeds sometimes
+        reference services they never define, and dropping those trips
+        silently would be worse than including them.
+        """
+        service = self.services.get(service_id)
+        return True if service is None else service.runs_on(day)
 
     def summary(self) -> str:
         stop_times = sum(len(t.stop_ids) for t in self.trips.values())
@@ -175,11 +241,16 @@ def load_feed(path: str | Path, progress=None) -> Feed:
             except ValueError:
                 continue  # a stop with no position cannot be walked to
             sid = row["stop_id"].strip()
+            try:
+                location_type = int((row.get("location_type") or "0").strip() or 0)
+            except ValueError:
+                location_type = 0
             feed.stops[sid] = Stop(
                 id=sid,
                 name=(row.get("stop_name") or sid).strip(),
                 lat=lat, lon=lon,
                 parent=(row.get("parent_station") or "").strip(),
+                location_type=location_type,
             )
 
     # ---- routes ------------------------------------------------------- #
@@ -248,9 +319,32 @@ def load_feed(path: str | Path, progress=None) -> Feed:
         with reader("calendar.txt") as fh:
             for row in csv.DictReader(fh):
                 sid = row["service_id"].strip()
-                feed.service_days[sid] = {
-                    i for i, d in enumerate(days) if (row.get(d) or "0").strip() == "1"
-                }
+                feed.services[sid] = Service(
+                    id=sid,
+                    weekdays={i for i, d in enumerate(days)
+                              if (row.get(d) or "0").strip() == "1"},
+                    start=parse_date(row.get("start_date", "")),
+                    end=parse_date(row.get("end_date", "")),
+                )
+
+    if "calendar_dates.txt" in present:
+        note("reading calendar exceptions")
+        with reader("calendar_dates.txt") as fh:
+            for row in csv.DictReader(fh):
+                sid = row["service_id"].strip()
+                day = parse_date(row.get("date", ""))
+                if day is None:
+                    continue
+                service = feed.services.get(sid)
+                if service is None:
+                    # A calendar_dates-only feed: no weekly pattern exists,
+                    # every operating day is listed as an addition.
+                    service = feed.services[sid] = Service(id=sid)
+                # exception_type 1 = added, 2 = removed
+                if (row.get("exception_type") or "1").strip() == "2":
+                    service.removed.add(day)
+                else:
+                    service.added.add(day)
 
     # ---- declared transfers ------------------------------------------- #
     if "transfers.txt" in present:

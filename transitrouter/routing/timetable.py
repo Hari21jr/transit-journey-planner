@@ -15,6 +15,7 @@ from __future__ import annotations
 
 from collections import defaultdict
 from dataclasses import dataclass, field
+from datetime import date
 
 from ..gtfs.loader import Feed
 
@@ -72,18 +73,29 @@ class Timetable:
         }
 
 
-def build_timetable(feed: Feed, weekday: int | None = None) -> Timetable:
+def build_timetable(
+    feed: Feed,
+    weekday: int | None = None,
+    on_date: date | None = None,
+) -> Timetable:
     """Group trips into RAPTOR routes.
 
-    ``weekday`` is 0=Monday..6=Sunday. When given, only trips whose service
-    runs that day are included; when omitted, every trip is. Feeds without a
-    ``calendar.txt`` are treated as running every day, since filtering them
-    to nothing would be worse than being slightly permissive.
+    Pass ``on_date`` to filter by an actual calendar date, which honours
+    holiday exceptions from ``calendar_dates.txt``. ``weekday`` (0=Monday) is
+    the cruder fallback that looks only at the weekly pattern; it exists
+    because it is useful in tests and for feeds with no calendar at all.
+    Given both, the date wins.
+
+    Feeds that define no services are treated as running everything, since
+    filtering them to nothing would be worse than being slightly permissive.
     """
     patterns: dict[tuple[str, tuple[str, ...]], TimetableRoute] = {}
 
     for trip in feed.trips.values():
-        if weekday is not None and feed.service_days:
+        if on_date is not None:
+            if feed.services and not feed.runs_on(trip.service_id, on_date):
+                continue
+        elif weekday is not None and feed.services:
             days = feed.service_days.get(trip.service_id)
             if days is not None and weekday not in days:
                 continue

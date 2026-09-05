@@ -6,7 +6,7 @@ No routing library — the algorithm is the project.
 
 [![CI](https://github.com/Hari21jr/transit-journey-planner/actions/workflows/ci.yml/badge.svg)](https://github.com/Hari21jr/transit-journey-planner/actions/workflows/ci.yml)
 ![Python](https://img.shields.io/badge/python-3.11%2B-blue)
-![Coverage](https://img.shields.io/badge/coverage-92%25-brightgreen)
+![Coverage](https://img.shields.io/badge/coverage-91%25-brightgreen)
 ![Dependencies](https://img.shields.io/badge/runtime%20deps-none-brightgreen)
 
 ```
@@ -76,6 +76,22 @@ meaning 1:10am belonging to the previous service day. Normalising that to
 `01:10` would sort it before the evening trips and corrupt every overnight
 journey. Times are stored as seconds since midnight and never wrapped.
 
+**Stations are one place, not twelve.** In a real feed "Hurdman Station" is a
+parent station plus a dozen numbered platforms, each with its own stop id.
+Someone asking to travel *from Hurdman* neither knows nor cares which platform
+their bus leaves from. Stops are grouped into places — by parent station, or
+failing that by shared name within 250m — and every platform is seeded into
+the search at once, so the router picks whichever turns out best. Route a
+station as a single arbitrary platform and you get journeys that open with a
+pointless walk, or none at all.
+
+**Holidays are honoured.** `calendar.txt` gives a weekly pattern, but agencies
+lean heavily on `calendar_dates.txt` to override it: a statutory holiday
+typically removes the weekday service and adds a Sunday one. Reading only the
+weekly pattern gets those days wrong in both directions. Some feeds skip the
+weekly calendar entirely and list every operating day as an exception, so both
+paths have to work.
+
 **Walking transfers are generated, not just read.** Most feeds declare only a
 handful of transfers, usually inside stations, and never mention the stop
 across the street. Footpaths are generated for stop pairs within 400m using a
@@ -122,13 +138,16 @@ journey plan /tmp/feed --from S2929 --to S5195 --at 08:00
 ```
 journey info      FEED   [--max-walk M]
 journey stops     FEED   --search TEXT [--limit N]
-journey plan      FEED   --from STOP --to STOP [--at HH:MM]
-                         [--weekday 0-6] [--max-rounds N]
+journey plan      FEED   --from PLACE --to PLACE [--at HH:MM]
+                         [--date YYYY-MM-DD] [--weekday 0-6] [--max-rounds N]
 journey benchmark FEED   [--queries N] [--at HH:MM] [--seed N]
 ```
 
-`--from` and `--to` take a stop id or an unambiguous name fragment. An
-ambiguous name lists the candidates rather than guessing.
+`--from` and `--to` take a place id, a raw stop id, or an unambiguous name. An
+ambiguous name lists the candidates rather than guessing which one you meant.
+
+`--date` routes for a real calendar day, honouring holiday exceptions.
+`--weekday` is the blunter fallback that ignores them.
 
 ## Performance
 
@@ -139,10 +158,10 @@ single-threaded, no caching between queries:
 |---|---|
 | Feed | 6,000 stops · 220 routes · 48,400 trips · **1,400,960 stop times** |
 | Parse | 6.8 s |
-| Build routing structures | 0.4 s (220 patterns, 14,438 footpaths) |
-| Query, mean | **6.8 ms** |
-| Query, median | 4.7 ms |
-| Query, p95 | 20.6 ms |
+| Build routing structures | 0.5 s (220 patterns, 14,438 footpaths, 6,000 places) |
+| Query, mean | **6.7 ms** |
+| Query, median | 3.9 ms |
+| Query, p95 | 18.3 ms |
 
 Reproduce with `journey benchmark /tmp/feed --queries 200`.
 
@@ -154,6 +173,7 @@ transitrouter/
 │   └── loader.py       streaming GTFS parse; times as seconds since midnight
 ├── routing/
 │   ├── timetable.py    regroup trips into RAPTOR routes by stop sequence
+│   ├── places.py       group platforms into the places people name
 │   ├── transfers.py    generated walking footpaths via a grid index
 │   ├── raptor.py       the round-based search and journey reconstruction
 │   └── journey.py      itinerary types and formatting
@@ -164,7 +184,7 @@ transitrouter/
 
 ```bash
 pip install -r requirements-dev.txt
-pytest --cov=transitrouter    # 47 tests, 92% coverage
+pytest --cov=transitrouter    # 55 tests, 91% coverage
 ruff check transitrouter tests
 ```
 
@@ -179,8 +199,6 @@ optimality is checked rather than assumed.
 
 - **Departure-time queries only.** No "arrive by 09:00" search, which needs
   the algorithm run backwards.
-- **`calendar_dates.txt` is not applied**, so holiday exceptions and
-  single-day services are missed. Regular weekly service is handled.
 - **No real-time data.** Everything is scheduled time; delays are invisible.
 - **Straight-line walking.** Footpaths ignore rivers, railways and buildings,
   so a 400m transfer across the Rideau Canal will be proposed where no bridge

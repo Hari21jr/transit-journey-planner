@@ -13,9 +13,10 @@ import random
 import statistics
 import sys
 import time
-from datetime import date
+from datetime import UTC, date, datetime
 
-from .gtfs.loader import GtfsError, format_time, load_feed, parse_time
+from .gtfs.loader import GtfsError, format_time, load_feed, parse_date, parse_time
+from .routing.places import build_places, resolve, search_places
 from .routing.raptor import plan
 from .routing.timetable import build_timetable
 from .routing.transfers import build_transfers
@@ -25,102 +26,125 @@ DIM, BOLD, GREEN, YELLOW, RESET = (
 )
 
 
-def _prepare(args, weekday: int | None = None):
+def _today() -> date:
+    return datetime.now(tz=UTC).astimezone().date()
+
+
+def _service_date(args) -> date:
+    """Which calendar day to route on."""
+    if getattr(args, "date", None):
+        parsed = parse_date(args.date.replace("-", ""))
+        if parsed is None:
+            raise GtfsError(f"unreadable date {args.date!r}; use YYYY-MM-DD")
+        return parsed
+    return _today()
+
+
+def _prepare(args, on_date: date | None = None):
     """Load a feed and build the routing structures, with timings."""
     t0 = time.perf_counter()
     feed = load_feed(args.feed, progress=None if args.quiet else _tick)
     t1 = time.perf_counter()
-    timetable = build_timetable(feed, weekday=weekday)
+    weekday = getattr(args, "weekday", None)
+    timetable = build_timetable(feed, weekday=weekday, on_date=on_date)
     timetable.transfers = build_transfers(feed, max_walk_m=args.max_walk)
+    places = build_places(feed)
     t2 = time.perf_counter()
 
     if not args.quiet:
         print(f"  loaded {feed.summary()} in {t1 - t0:.2f}s", file=sys.stderr)
         stats = timetable.stats
-        print(f"  built {stats['routes']:,} routing patterns, "
+        print(f"  built {stats['routes']:,} patterns, {len(places):,} places, "
               f"{stats['transfers']:,} footpaths in {t2 - t1:.2f}s\n",
               file=sys.stderr)
-    return feed, timetable
+    return feed, timetable, places
 
 
 def _tick(message: str) -> None:
     print(f"  … {message}", end="\r", file=sys.stderr)
 
 
-def _resolve_stop(feed, token: str) -> str | None:
-    """Accept a stop id, or a unique name fragment."""
-    if token in feed.stops:
-        return token
-    lowered = token.lower()
-    matches = [s for s in feed.stops.values() if lowered in s.name.lower()]
-    if len(matches) == 1:
-        return matches[0].id
+def _resolve_place(feed, places, token: str):
+    """Accept a place id, a stop id, or an unambiguous name."""
+    place = resolve(feed, places, token)
+    if place is not None:
+        return place
+    matches = search_places(places, token)
     if not matches:
         print(f"no stop matches {token!r}", file=sys.stderr)
     else:
         print(f"{token!r} is ambiguous ({len(matches)} matches). "
-              f"Use `journey stops` to find the id:", file=sys.stderr)
-        for stop in matches[:8]:
-            print(f"    {stop.id:<12} {stop.name}", file=sys.stderr)
+              f"Use `journey stops` to pick one:", file=sys.stderr)
+        for p in matches[:8]:
+            platforms = f" ({p.platform_count} stops)" if p.platform_count > 1 else ""
+            print(f"    {p.id:<14} {p.name}{platforms}", file=sys.stderr)
     return None
 
 
 # --------------------------------------------------------------------- #
 
 def cmd_info(args) -> int:
-    feed, timetable = _prepare(args)
+    feed, timetable, places = _prepare(args)
     stats = timetable.stats
     print(f"{BOLD}Feed{RESET}          {args.feed}")
     print(f"stops         {len(feed.stops):,}")
     print(f"gtfs routes   {len(feed.routes):,}")
     print(f"trips         {len(feed.trips):,}")
     print(f"stop times    {sum(len(t.stop_ids) for t in feed.trips.values()):,}")
-    print(f"services      {len(feed.service_days):,}")
+    print(f"services      {len(feed.services):,}")
+    exceptions = sum(len(s.added) + len(s.removed) for s in feed.services.values())
+    print(f"date overrides{exceptions:>8,}   "
+          f"{DIM}(holiday and one-off service changes){RESET}")
     print()
     print(f"{BOLD}Routing structures{RESET}")
     print(f"patterns      {stats['routes']:,}   "
           f"{DIM}(trips regrouped by identical stop sequence){RESET}")
     print(f"footpaths     {stats['transfers']:,}   "
           f"{DIM}(walking transfers within {args.max_walk:.0f}m){RESET}")
+    grouped = sum(1 for p in places.values() if p.platform_count > 1)
+    print(f"places        {len(places):,}   "
+          f"{DIM}({grouped:,} group more than one stop){RESET}")
     return 0
 
 
 def cmd_stops(args) -> int:
     args.quiet = True
     feed = load_feed(args.feed)
-    needle = args.search.lower()
-    matches = [s for s in feed.stops.values() if needle in s.name.lower()]
+    places = build_places(feed)
+    matches = search_places(places, args.search, limit=args.limit + 1)
     if not matches:
         print("no matches")
         return 1
-    matches.sort(key=lambda s: s.name)
-    print(f"{'ID':<14}{'NAME':<44}LAT, LON")
-    for stop in matches[: args.limit]:
-        print(f"{stop.id:<14}{stop.name[:43]:<44}{stop.lat:.5f}, {stop.lon:.5f}")
+    print(f"{'ID':<16}{'NAME':<42}{'STOPS':>6}  LAT, LON")
+    for place in matches[: args.limit]:
+        print(f"{place.id[:15]:<16}{place.name[:41]:<42}"
+              f"{place.platform_count:>6}  {place.lat:.5f}, {place.lon:.5f}")
     if len(matches) > args.limit:
-        print(f"{DIM}… and {len(matches) - args.limit} more{RESET}")
+        print(f"{DIM}… and more; narrow the search{RESET}")
     return 0
 
 
 def cmd_plan(args) -> int:
-    weekday = args.weekday if args.weekday is not None else date.today().weekday()
-    feed, timetable = _prepare(args, weekday=weekday)
+    on_date = _service_date(args) if args.weekday is None else None
+    feed, timetable, places = _prepare(args, on_date=on_date)
 
-    origin = _resolve_stop(feed, args.origin)
-    destination = _resolve_stop(feed, args.destination)
+    origin = _resolve_place(feed, places, args.origin)
+    destination = _resolve_place(feed, places, args.destination)
     if not origin or not destination:
         return 1
-    if origin == destination:
-        print("origin and destination are the same stop", file=sys.stderr)
+    if origin.id == destination.id:
+        print("origin and destination are the same place", file=sys.stderr)
         return 1
 
     depart = parse_time(args.at)
     t0 = time.perf_counter()
-    result = plan(timetable, origin, destination, depart, max_rounds=args.max_rounds)
+    result = plan(timetable, origin.stop_ids, destination.stop_ids,
+                  depart, max_rounds=args.max_rounds)
     elapsed = (time.perf_counter() - t0) * 1000
 
-    print(f"{BOLD}{feed.stops[origin].name} → {feed.stops[destination].name}{RESET}")
-    print(f"{DIM}departing after {format_time(depart)} · "
+    when = on_date.isoformat() if on_date else f"weekday {args.weekday}"
+    print(f"{BOLD}{origin.name} → {destination.name}{RESET}")
+    print(f"{DIM}{when}, departing after {format_time(depart)} · "
           f"solved in {elapsed:.0f}ms · {result.stops_reached:,} stops reached "
           f"in {result.rounds_used} rounds{RESET}\n")
 
@@ -140,8 +164,8 @@ def cmd_plan(args) -> int:
 
 def cmd_benchmark(args) -> int:
     """Time random queries — the number that goes on a resume."""
-    weekday = args.weekday if args.weekday is not None else date.today().weekday()
-    feed, timetable = _prepare(args, weekday=weekday)
+    on_date = _service_date(args) if args.weekday is None else None
+    _feed, timetable, _places = _prepare(args, on_date=on_date)
 
     routable = [s for s in timetable.stop_routes if timetable.stop_routes[s]]
     if len(routable) < 2:
@@ -199,8 +223,9 @@ def build_parser() -> argparse.ArgumentParser:
     pl.add_argument("--from", dest="origin", required=True)
     pl.add_argument("--to", dest="destination", required=True)
     pl.add_argument("--at", default="08:00", help="departure time, HH:MM")
+    pl.add_argument("--date", help="service date, YYYY-MM-DD (default: today)")
     pl.add_argument("--weekday", type=int, choices=range(7),
-                    help="0=Monday .. 6=Sunday (default: today)")
+                    help="ignore calendar dates and use this weekday, 0=Mon")
     pl.add_argument("--max-rounds", type=int, default=5,
                     help="max vehicles boarded (transfers + 1)")
     pl.set_defaults(func=cmd_plan)
@@ -208,6 +233,7 @@ def build_parser() -> argparse.ArgumentParser:
     b = common(sub.add_parser("benchmark", help="time random queries"))
     b.add_argument("--queries", type=int, default=100)
     b.add_argument("--at", default="08:00")
+    b.add_argument("--date", help="service date, YYYY-MM-DD")
     b.add_argument("--weekday", type=int, choices=range(7))
     b.add_argument("--max-rounds", type=int, default=5)
     b.add_argument("--seed", type=int, default=42)

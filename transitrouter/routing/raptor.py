@@ -22,6 +22,7 @@ Reference: Delling, Pajor & Werneck, "Round-Based Public Transit Routing"
 
 from __future__ import annotations
 
+from collections.abc import Iterable
 from dataclasses import dataclass
 
 from .journey import Journey, Leg
@@ -58,14 +59,19 @@ class RaptorResult:
 
 def plan(
     timetable: Timetable,
-    origin: str,
-    destination: str,
+    origin: str | Iterable[str],
+    destination: str | Iterable[str],
     departure_time: int,
     max_rounds: int = 5,
     max_initial_walk: bool = True,
 ) -> RaptorResult:
     """Find journeys from ``origin`` to ``destination`` departing no earlier
     than ``departure_time`` (seconds since midnight).
+
+    Both endpoints accept either a single stop id or a collection of them.
+    A named place such as a station is a set of platform stops, and the
+    traveller does not care which one they leave from — so all of them are
+    seeded at once and the search picks whichever turns out to be best.
 
     Returns one journey per transfer count, so the caller can choose between
     "fastest" and "fewest changes" rather than being handed a single answer.
@@ -74,27 +80,42 @@ def plan(
     stop_routes = timetable.stop_routes
     footpaths = timetable.transfers
 
-    if origin not in stop_routes and origin not in footpaths:
+    origins = {origin} if isinstance(origin, str) else set(origin)
+    targets = {destination} if isinstance(destination, str) else set(destination)
+    origins.discard("")
+    targets.discard("")
+
+    if not origins or not targets or origins & targets:
+        return RaptorResult([], 0, 0)
+    if not any(o in stop_routes or o in footpaths for o in origins):
         return RaptorResult([], 0, 0)
 
     # best[p]: earliest known arrival at p by any number of trips.
-    best: dict[str, int] = {origin: departure_time}
+    best: dict[str, int] = dict.fromkeys(origins, departure_time)
     # labels[k][p]: earliest arrival at p using at most k trips.
-    labels: list[dict[str, int]] = [{origin: departure_time}]
+    labels: list[dict[str, int]] = [dict.fromkeys(origins, departure_time)]
     parents: list[dict[str, _Board]] = [{}]
 
-    marked: set[str] = {origin}
+    marked: set[str] = set(origins)
+
+    # The best arrival at any target, cached rather than recomputed. This is
+    # read once per stop scanned — millions of times on a real feed — so a
+    # min() over the target set here is measurably slower than maintaining it.
+    target_bound = INF
 
     # Walking from the origin before boarding anything is allowed, and is
     # often the difference between a sensible journey and a silly one.
     if max_initial_walk:
-        for near, seconds in footpaths.get(origin, ()):
-            arrival = departure_time + seconds
-            if arrival < best.get(near, INF):
-                best[near] = arrival
-                labels[0][near] = arrival
-                parents[0][near] = _Board("walk", origin, walk_seconds=seconds)
-                marked.add(near)
+        for start in origins:
+            for near, seconds in footpaths.get(start, ()):
+                arrival = departure_time + seconds
+                if arrival < best.get(near, INF):
+                    best[near] = arrival
+                    if near in targets and arrival < target_bound:
+                        target_bound = arrival
+                    labels[0][near] = arrival
+                    parents[0][near] = _Board("walk", start, walk_seconds=seconds)
+                    marked.add(near)
 
     journeys: list[Journey] = []
     rounds_used = 0
@@ -130,8 +151,10 @@ def plan(
                     # Pruning: an arrival no better than what we already know
                     # for this stop, or than the best arrival at the target,
                     # cannot be part of an optimal journey.
-                    if arrival < min(best.get(stop, INF), best.get(destination, INF)):
+                    if arrival < min(best.get(stop, INF), target_bound):
                         best[stop] = arrival
+                        if stop in targets and arrival < target_bound:
+                            target_bound = arrival
                         labels[k][stop] = arrival
                         parents[k][stop] = _Board(
                             "ride", route.stops[board_position],
@@ -164,13 +187,19 @@ def plan(
                 arrival = base + seconds
                 if arrival < best.get(near, INF):
                     best[near] = arrival
+                    if near in targets and arrival < target_bound:
+                        target_bound = arrival
                     labels[k][near] = arrival
                     parents[k][near] = _Board("walk", stop, walk_seconds=seconds)
                     marked.add(near)
 
-        # Record the best journey achievable with exactly this many rounds.
-        if destination in labels[k]:
-            journey = _reconstruct(timetable, labels, parents, k, origin, destination)
+        # Record the best journey achievable with exactly this many rounds,
+        # arriving at whichever target stop is reached earliest.
+        reached = [t for t in targets if t in labels[k]]
+        if reached:
+            arrival_stop = min(reached, key=lambda t: labels[k][t])
+            journey = _reconstruct(timetable, labels, parents, k,
+                                   origins, arrival_stop)
             if journey and journey.legs:
                 journeys.append(journey)
 
@@ -195,7 +224,7 @@ def _reconstruct(
     labels: list[dict[str, int]],
     parents: list[dict[str, _Board]],
     round_index: int,
-    origin: str,
+    origins: set[str],
     destination: str,
 ) -> Journey | None:
     """Walk the parent pointers backwards from the destination."""
@@ -205,7 +234,7 @@ def _reconstruct(
     k = round_index
     guard = 0
 
-    while stop != origin:
+    while stop not in origins:
         guard += 1
         if guard > 200:  # a cycle here would mean a bug, not a long journey
             return None
