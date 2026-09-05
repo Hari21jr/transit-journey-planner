@@ -6,7 +6,7 @@ No routing library — the algorithm is the project.
 
 [![CI](https://github.com/Hari21jr/transit-journey-planner/actions/workflows/ci.yml/badge.svg)](https://github.com/Hari21jr/transit-journey-planner/actions/workflows/ci.yml)
 ![Python](https://img.shields.io/badge/python-3.11%2B-blue)
-![Coverage](https://img.shields.io/badge/coverage-91%25-brightgreen)
+![Coverage](https://img.shields.io/badge/coverage-92%25-brightgreen)
 ![Dependencies](https://img.shields.io/badge/runtime%20deps-none-brightgreen)
 
 ```
@@ -206,7 +206,7 @@ transitrouter/
 
 ```bash
 pip install -r requirements-dev.txt
-pytest --cov=transitrouter    # 64 tests, 91% coverage
+pytest --cov=transitrouter    # 64 tests, 92% coverage
 ruff check transitrouter tests
 ```
 
