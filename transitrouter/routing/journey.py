@@ -79,8 +79,30 @@ class Journey:
                 out.append(f"{format_time(leg.arrive)}  arrive {name(leg.to_stop)}")
         return out
 
-    def summary(self) -> str:
-        return (f"{format_time(self.depart)} → {format_time(self.arrive)}  "
-                f"({self.duration // 60} min, {self.transfers} transfer"
+    def wait_before(self, query_time: int) -> int:
+        """Seconds spent waiting before this journey starts moving."""
+        return max(0, self.depart - query_time)
+
+    def door_to_door(self, query_time: int) -> int:
+        """Total elapsed time from asking to arriving.
+
+        Reporting only the in-vehicle duration flatters journeys that begin
+        with a long wait: a 24-minute ride you catch in half an hour is not
+        faster than a 27-minute one you can board now. Comparisons have to
+        start from the same moment.
+        """
+        return max(0, self.arrive - query_time)
+
+    def summary(self, query_time: int | None = None) -> str:
+        base = (f"{format_time(self.depart)} → {format_time(self.arrive)}  ")
+        if query_time is None:
+            total = self.duration
+            wait = ""
+        else:
+            total = self.door_to_door(query_time)
+            waited = self.wait_before(query_time)
+            wait = f", {waited // 60} min wait" if waited >= 60 else ""
+        return (base +
+                f"({total // 60} min total{wait}, {self.transfers} transfer"
                 f"{'' if self.transfers == 1 else 's'}, "
                 f"{self.walking_seconds // 60} min walking)")

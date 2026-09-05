@@ -170,7 +170,7 @@ def cmd_plan(args) -> int:
 
     for i, journey in enumerate(result.journeys):
         tag = f"{GREEN}fastest{RESET}" if i == 0 else f"{YELLOW}fewer changes{RESET}"
-        print(f"  [{tag}] {journey.summary()}")
+        print(f"  [{tag}] {journey.summary(depart)}")
         for line in journey.describe(feed):
             print(f"    {line}")
         print()

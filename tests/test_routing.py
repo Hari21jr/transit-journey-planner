@@ -199,3 +199,31 @@ def test_summary_and_description_render(timetable, feed):
     assert "min" in journey.summary()
     lines = journey.describe(feed)
     assert any("Echo Terminal" in line for line in lines)
+
+
+def test_duration_is_measured_from_when_you_asked(timetable):
+    """A ride you must wait 30 minutes for is not faster than one you catch now.
+
+    Reporting in-vehicle time alone makes the waiting option look better than
+    the one that actually gets you there first.
+    """
+    result = plan(timetable, "A", "E", EIGHT_AM)
+    direct = next(j for j in result.journeys if j.transfers == 0)
+
+    # Route 3 leaves A at 08:00 and takes 55 minutes; the transfer journey
+    # arrives at 08:27. Door-to-door must reflect the real arrival.
+    assert direct.door_to_door(EIGHT_AM) == direct.arrive - EIGHT_AM
+    assert result.best.door_to_door(EIGHT_AM) < direct.door_to_door(EIGHT_AM)
+
+
+def test_wait_is_reported_in_the_summary(timetable):
+    """Departing at 08:05 means waiting for the 08:10, and saying so."""
+    result = plan(timetable, "A", "C", parse_time("08:05"))
+    journey = result.best
+    assert journey.wait_before(parse_time("08:05")) == 5 * 60
+    assert "5 min wait" in journey.summary(parse_time("08:05"))
+
+
+def test_no_wait_is_not_mentioned(timetable):
+    journey = plan(timetable, "A", "C", EIGHT_AM).best
+    assert "wait" not in journey.summary(EIGHT_AM)

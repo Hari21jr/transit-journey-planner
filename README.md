@@ -10,28 +10,28 @@ No routing library — the algorithm is the project.
 ![Dependencies](https://img.shields.io/badge/runtime%20deps-none-brightgreen)
 
 ```
-$ journey plan feed.zip --from S2929 --to S5195 --at 08:00
+$ journey plan octranspo.zip --from "Hurdman" --to "Rideau" --at 17:30
 
-Stop 2929 → Stop 5195
-departing after 08:00:00 · solved in 5ms · 608 stops reached in 5 rounds
+HURDMAN → RIDEAU
+2024-07-15, departing after 17:30:00 · solved in 32ms · 2,995 stops reached in 5 rounds
 
-  [fastest] 08:03:26 → 09:19:21  (75 min, 2 transfers, 4 min walking)
-    08:03:26  route 157 to Stop 4645 from Stop 2929 (1 stops)
-    08:06:02  arrive Stop 3007
-    08:06:02  walk 4 min to Stop 3084
-    08:14:29  route 136 to Stop 3107 from Stop 3084 (5 stops)
-    08:22:04  arrive Stop 3089
-    08:27:57  route 9 to Stop 5507 from Stop 3089 (27 stops)
-    09:19:21  arrive Stop 5195
+  [fastest] 17:30:00 → 17:57:24  (27 min total, 1 transfer, 8 min walking)
+    17:30:00  walk 1 min to HURDMAN O-TRAIN WEST / OUEST
+    17:35:00  route 1 to Tunney's Pasture from HURDMAN O-TRAIN WEST (1 stops)
+    17:38:00  arrive LEES O-TRAIN WEST / OUEST
+    17:38:00  walk 4 min to LEES / BRUNSWICK
+    17:44:00  route 16 to Tunney's Pasture from LEES / BRUNSWICK (14 stops)
+    17:54:00  arrive MACKENZIE KING 2A
+    17:54:00  walk 3 min to RIDEAU C
 
-  [fewer changes] 08:00:00 → 09:45:53  (105 min, 1 transfer, 8 min walking)
-    08:00:00  walk 4 min to Stop 2928
-    08:17:25  route 133 to Stop 5112 from Stop 2928 (28 stops)
-    09:14:27  arrive Stop 5112
-    09:14:27  walk 4 min to Stop 5190
-    09:36:35  route 70 to Stop 5198 from Stop 5190 (5 stops)
-    09:45:53  arrive Stop 5195
+  [fewer changes] 17:58:00 → 18:22:15  (52 min total, 28 min wait, 0 transfers)
+    17:58:00  route 9 to Rideau from HURDMAN E (27 stops)
+    18:21:00  arrive DALHOUSIE / RIDEAU (D)
+    18:21:00  walk 1 min to RIDEAU A
 ```
+
+Real output on OC Transpo's Ottawa feed. Both journeys are optimal: one gets
+you there 25 minutes sooner, the other needs no changes at all.
 
 ## Why RAPTOR and not Dijkstra
 
@@ -48,7 +48,7 @@ round 1 reached. Two things fall out of that:
 - **It is naturally multi-criteria.** The answer is a set of journeys trading
   arrival time against transfers, rather than a single result produced by an
   arbitrary transfer penalty. Both itineraries above are optimal — one is
-  30 minutes faster, the other has one fewer change.
+  25 minutes faster, the other has one fewer change.
 - **Transfers are a loop bound, not a filter.** "At most two changes" is
   `max_rounds=3`, enforced during the search instead of by discarding results
   afterwards.
@@ -111,6 +111,11 @@ generated ones, since they know their own stations.
 **Walking is not a transfer.** A journey that walks between two stops still
 counts as one vehicle, which matters for the Pareto comparison.
 
+**Time is measured from when you asked, not from when the bus moves.** The
+direct route above is a 24-minute ride — but it leaves in 28 minutes, so it
+delivers you 25 minutes later than the option with a change in it. Reporting
+in-vehicle duration alone makes the waiting journey look like the fast one.
+
 ## Quick start
 
 ```bash
@@ -169,15 +174,18 @@ On OC Transpo's published feed for Ottawa, single-threaded:
 | Build routing structures | 0.5 s |
 | | 891 routing patterns · 4,111 places · 53,018 footpaths |
 
-On a generated feed of comparable size, with no caching between queries:
+200 random origin/destination pairs on that feed, departing 08:00, no caching
+between queries:
 
 | | |
 |---|---|
-| Query, mean | **6.7 ms** |
-| Query, median | 3.9 ms |
-| Query, p95 | 18.3 ms |
+| Solved | 192 / 200 (96%) |
+| Query, mean | **50.4 ms** |
+| Query, median | 52.2 ms |
+| Query, p95 | 81.5 ms |
+| Slowest | 176.5 ms |
 
-Reproduce with `journey benchmark FEED --queries 200`.
+Reproduce with `journey benchmark FEED --queries 200 --date YYYY-MM-DD`.
 
 ## Layout
 
@@ -198,7 +206,7 @@ transitrouter/
 
 ```bash
 pip install -r requirements-dev.txt
-pytest --cov=transitrouter    # 55 tests, 91% coverage
+pytest --cov=transitrouter    # 64 tests, 91% coverage
 ruff check transitrouter tests
 ```
 
