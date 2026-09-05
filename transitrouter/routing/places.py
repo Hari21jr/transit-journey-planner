@@ -13,6 +13,7 @@ parent station, or failing that, share a name and sit close together.
 
 from __future__ import annotations
 
+import re
 from collections import defaultdict
 from dataclasses import dataclass, field
 
@@ -23,6 +24,32 @@ from .transfers import haversine
 # "Bank / Somerset" and "Bank / Gladstone" are not one location, and many
 # feeds reuse a street name across an entire corridor.
 SAME_NAME_RADIUS_M = 250.0
+
+# Platform designators to strip before grouping. Many agencies — OC Transpo
+# among them — never populate parent_station and instead encode the platform
+# in the name: HURDMAN A, HURDMAN B, HURDMAN C are one station in every sense
+# a traveller cares about. Without this, asking to leave "from Hurdman" is
+# ambiguous between seven places that are all the same place.
+_PLATFORM_SUFFIX = re.compile(
+    r"""\s+(?:
+          [A-Z]                      # HURDMAN A
+        | (?:PLATFORM|PLATFORME|BAY|QUAI|STOP|STAND)\s*\d+   # ... PLATFORM 3
+        | \d{1,2}                    # TUNNEY'S PASTURE 2
+    )$""",
+    re.IGNORECASE | re.VERBOSE,
+)
+
+
+def normalise_name(name: str) -> str:
+    """Strip a trailing platform designator, if removing it leaves a name.
+
+    Deliberately conservative: only one suffix is removed, and only when at
+    least four characters survive. "RIDEAU / FRIEL" and "RIDEAU / NELSON"
+    keep their distinct names and stay separate places, which is correct —
+    they are different corners, not platforms of one station.
+    """
+    stripped = _PLATFORM_SUFFIX.sub("", name.strip())
+    return (stripped if len(stripped) >= 4 else name.strip()).lower()
 
 
 @dataclass
@@ -66,7 +93,7 @@ def build_places(feed: Feed) -> dict[str, Place]:
     # too far apart to be one location.
     by_name: dict[str, list[str]] = defaultdict(list)
     for stop_id in unparented:
-        by_name[feed.stops[stop_id].name.strip().lower()].append(stop_id)
+        by_name[normalise_name(feed.stops[stop_id].name)].append(stop_id)
 
     for name_key, stop_ids in by_name.items():
         if len(stop_ids) == 1:
@@ -102,10 +129,20 @@ def build_places(feed: Feed) -> dict[str, Place]:
         stops = [feed.stops[s] for s in stop_ids if s in feed.stops]
         if not stops:
             continue
-        # A parent station carries the name people use; otherwise take the
-        # first member's name, which the clustering made them all share.
+        # A parent station carries the name people use. Otherwise, when the
+        # members only agree after stripping platform letters, use the shared
+        # stem — calling the group "HURDMAN A" would be actively misleading
+        # when it also contains B through E.
         parent = feed.stops.get(place_id)
-        name = parent.name if parent else stops[0].name
+        if parent is not None and not parent.is_boardable:
+            name = parent.name
+        else:
+            distinct = {s.name for s in stops}
+            if len(distinct) == 1:
+                name = stops[0].name
+            else:
+                stem = normalise_name(stops[0].name)
+                name = stem.upper() if stops[0].name.isupper() else stem.title()
         places[place_id] = Place(
             id=place_id,
             name=name,

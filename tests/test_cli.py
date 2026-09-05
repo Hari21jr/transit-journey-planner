@@ -293,3 +293,90 @@ def test_expired_feed_explains_itself_instead_of_saying_no_route(feed_zip, capsy
     out = capsys.readouterr().out
     assert "no service on 2030-01-07" in out
     assert "2026-01-01" in out and "2027-12-31" in out
+
+
+# --------------------------------------------------------------------- #
+# Platform-suffix grouping, modelled on OC Transpo's real naming
+
+def _write_feed(d, stops_csv):
+    d.mkdir(parents=True, exist_ok=True)
+    (d / "stops.txt").write_text(stops_csv)
+    (d / "routes.txt").write_text(
+        "route_id,route_short_name,route_long_name,route_type\nR,1,One,3\n")
+    (d / "trips.txt").write_text("trip_id,route_id,service_id\nT,R,S\n")
+    first = stops_csv.splitlines()[1].split(",")[0]
+    second = stops_csv.splitlines()[2].split(",")[0]
+    (d / "stop_times.txt").write_text(
+        "trip_id,arrival_time,departure_time,stop_id,stop_sequence\n"
+        f"T,08:00:00,08:00:00,{first},0\nT,08:10:00,08:10:00,{second},1\n")
+    return d
+
+
+def test_lettered_platforms_group_into_one_station(tmp_path):
+    """OC Transpo names platforms HURDMAN A..E and sets no parent_station.
+
+    All five are the same station to anyone travelling. Left ungrouped,
+    'from Hurdman' is ambiguous between places that are not actually distinct.
+    """
+    from transitrouter.gtfs.loader import load_feed
+    from transitrouter.routing.places import build_places, resolve
+
+    d = _write_feed(tmp_path / "feed",
+        "stop_id,stop_name,stop_lat,stop_lon\n"
+        "AF910,HURDMAN A,45.41219,-75.66504\n"
+        "AF920,HURDMAN B,45.41214,-75.66556\n"
+        "AF930,HURDMAN C,45.41211,-75.66632\n"
+        "AF940,HURDMAN D,45.41208,-75.66689\n"
+        "AF950,HURDMAN E,45.41204,-75.66721\n")
+
+    feed = load_feed(d)
+    places = build_places(feed)
+    hurdman = resolve(feed, places, "Hurdman")
+    assert hurdman is not None, "Hurdman should resolve to a single place"
+    assert hurdman.platform_count == 5
+    assert "A" not in hurdman.name.split()[-1:], "should not be named after one platform"
+
+
+def test_different_corners_of_one_street_stay_separate(tmp_path):
+    """RIDEAU / FRIEL and RIDEAU / NELSON are different places, not platforms.
+
+    This is the failure mode in the other direction: over-eager grouping
+    would merge an entire street into one stop.
+    """
+    from transitrouter.gtfs.loader import load_feed
+    from transitrouter.routing.places import build_places
+
+    d = _write_feed(tmp_path / "feed",
+        "stop_id,stop_name,stop_lat,stop_lon\n"
+        "CD080,RIDEAU / FRIEL,45.42900,-75.66900\n"
+        "CD100,RIDEAU / NELSON,45.42800,-75.67300\n"
+        "CD040,RIDEAU / AUGUSTA,45.42850,-75.67100\n")
+
+    places = build_places(load_feed(d))
+    assert len(places) == 3
+
+
+def test_platform_stripping_is_conservative():
+    """Stripping must never reduce a name to something meaningless."""
+    from transitrouter.routing.places import normalise_name
+
+    assert normalise_name("HURDMAN A") == "hurdman"
+    assert normalise_name("TUNNEY'S PASTURE 2") == "tunney's pasture"
+    assert normalise_name("BLAIR PLATFORM 3") == "blair"
+    assert normalise_name("RIDEAU / FRIEL") == "rideau / friel"
+    # Too short to strip — "MAIN" must not become "M".
+    assert normalise_name("MAIN") == "main"
+
+
+def test_far_apart_lettered_stops_are_not_merged(tmp_path):
+    """Sharing a stem is not enough; they must also be close together."""
+    from transitrouter.gtfs.loader import load_feed
+    from transitrouter.routing.places import build_places
+
+    d = _write_feed(tmp_path / "feed",
+        "stop_id,stop_name,stop_lat,stop_lon\n"
+        "X1,BANK A,45.40000,-75.69000\n"
+        "X2,BANK B,45.43000,-75.69000\n")   # ~3.3 km apart
+
+    places = build_places(load_feed(d))
+    assert len(places) == 2

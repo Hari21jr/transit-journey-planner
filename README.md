@@ -76,14 +76,23 @@ meaning 1:10am belonging to the previous service day. Normalising that to
 `01:10` would sort it before the evening trips and corrupt every overnight
 journey. Times are stored as seconds since midnight and never wrapped.
 
-**Stations are one place, not twelve.** In a real feed "Hurdman Station" is a
-parent station plus a dozen numbered platforms, each with its own stop id.
-Someone asking to travel *from Hurdman* neither knows nor cares which platform
-their bus leaves from. Stops are grouped into places — by parent station, or
-failing that by shared name within 250m — and every platform is seeded into
-the search at once, so the router picks whichever turns out best. Route a
-station as a single arbitrary platform and you get journeys that open with a
-pointless walk, or none at all.
+**Stations are one place, not seven.** Someone asking to travel *from Hurdman*
+neither knows nor cares which platform their bus leaves from. GTFS has a
+`parent_station` field for exactly this — and OC Transpo, like many agencies,
+leaves it empty and encodes the platform in the name instead: `HURDMAN A`
+through `HURDMAN E`, five separate stops with five separate names.
+
+So places are built three ways in order: by parent station where one exists,
+then by name with a trailing platform designator stripped (`HURDMAN A` →
+`HURDMAN`, `BLAIR PLATFORM 3` → `BLAIR`), and finally by proximity — stops
+sharing a stem but 3km apart are not one station. On Ottawa's feed that turns
+5,791 stops into 4,111 places, 1,578 of which group more than one stop.
+
+The stripping is deliberately conservative, because the opposite failure is
+worse: `RIDEAU / FRIEL` and `RIDEAU / NELSON` are different corners, and
+merging a whole street into one stop would produce confidently wrong journeys.
+Every platform of a resolved place is seeded into the search at once, so the
+router picks whichever turns out best.
 
 **Holidays are honoured.** `calendar.txt` gives a weekly pattern, but agencies
 lean heavily on `calendar_dates.txt` to override it: a statutory holiday
@@ -151,19 +160,24 @@ ambiguous name lists the candidates rather than guessing which one you meant.
 
 ## Performance
 
-Measured on the generated 6,000-stop feed (`scripts/make_large_feed.py`),
-single-threaded, no caching between queries:
+On OC Transpo's published feed for Ottawa, single-threaded:
 
 | | |
 |---|---|
-| Feed | 6,000 stops · 220 routes · 48,400 trips · **1,400,960 stop times** |
-| Parse | 6.8 s |
-| Build routing structures | 0.5 s (220 patterns, 14,438 footpaths, 6,000 places) |
+| Feed | 5,791 stops · 204 routes · 54,358 trips · **2,014,198 stop times** |
+| Parse | 9.4 s |
+| Build routing structures | 0.5 s |
+| | 891 routing patterns · 4,111 places · 53,018 footpaths |
+
+On a generated feed of comparable size, with no caching between queries:
+
+| | |
+|---|---|
 | Query, mean | **6.7 ms** |
 | Query, median | 3.9 ms |
 | Query, p95 | 18.3 ms |
 
-Reproduce with `journey benchmark /tmp/feed --queries 200`.
+Reproduce with `journey benchmark FEED --queries 200`.
 
 ## Layout
 
