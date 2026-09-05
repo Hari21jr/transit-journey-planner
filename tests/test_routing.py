@@ -1,0 +1,201 @@
+"""Correctness tests for the router, against a feed with known answers."""
+
+from __future__ import annotations
+
+import pytest
+
+from transitrouter.gtfs.loader import format_time, parse_time
+from transitrouter.routing.raptor import plan
+from transitrouter.routing.timetable import build_timetable
+from transitrouter.routing.transfers import haversine, walk_seconds
+
+EIGHT_AM = parse_time("08:00")
+
+
+# --------------------------------------------------------------------- #
+# Time handling
+
+@pytest.mark.parametrize("text,seconds", [
+    ("00:00:00", 0), ("08:30:00", 30600), ("23:59:59", 86399),
+    ("24:00:00", 86400), ("25:10:00", 90600), ("8:05", 29100),
+])
+def test_parse_time(text, seconds):
+    assert parse_time(text) == seconds
+
+
+def test_times_past_midnight_survive_a_round_trip():
+    """A 25:10 trip is the 1:10am service of the previous service day.
+
+    Normalising it to 01:10 would make it sort before the evening trips and
+    silently corrupt every overnight journey.
+    """
+    assert format_time(parse_time("25:10:00")) == "25:10:00"
+
+
+def test_blank_time_is_marked_missing():
+    assert parse_time("") == -1
+    assert format_time(-1) == "--:--"
+
+
+# --------------------------------------------------------------------- #
+# Loading
+
+def test_feed_loads_expected_shape(feed):
+    assert len(feed.stops) == 7
+    assert len(feed.routes) == 3
+    # 6 route-1 + 6 route-2 + 1 route-3 + 1 weekend
+    assert len(feed.trips) == 14
+    assert feed.stops["C"].name == "Charlie Hub"
+
+
+def test_service_days_parsed(feed):
+    assert feed.service_days["WEEKDAY"] == {0, 1, 2, 3, 4}
+    assert feed.service_days["WEEKEND"] == {5, 6}
+
+
+def test_weekday_filter_excludes_weekend_trips(feed):
+    monday = build_timetable(feed, weekday=0)
+    saturday = build_timetable(feed, weekday=5)
+    assert sum(len(r) for r in monday.routes) == 13
+    assert sum(len(r) for r in saturday.routes) == 1
+
+
+def test_trips_are_regrouped_by_stop_sequence(feed):
+    """Route 1 and route 3 both start at A but serve different stops.
+
+    They must never end up in the same routing pattern, or the router will
+    board a route-3 vehicle expecting it to stop at B.
+    """
+    tt = build_timetable(feed, weekday=0)
+    patterns = {r.stops for r in tt.routes}
+    assert ("A", "B", "C") in patterns
+    assert ("A", "E") in patterns
+    assert ("C", "D", "E") in patterns
+
+
+def test_trips_within_a_pattern_are_sorted_by_departure(feed):
+    tt = build_timetable(feed, weekday=0)
+    for route in tt.routes:
+        firsts = [d[0] for d in route.departures]
+        assert firsts == sorted(firsts)
+
+
+# --------------------------------------------------------------------- #
+# Transfers
+
+def test_haversine_matches_known_distance():
+    # Roughly 40 m between the two Charlie stops.
+    d = haversine(45.4300, -75.6800, 45.4302, -75.6805)
+    assert 30 < d < 60
+
+
+def test_walk_time_has_a_floor():
+    """Even a zero-metre transfer takes time — you still have to get off."""
+    assert walk_seconds(0) == 60
+    assert walk_seconds(400) > 60
+
+
+def test_nearby_stops_get_footpaths(timetable):
+    assert any(dest == "C2" for dest, _ in timetable.transfers.get("C", []))
+
+
+def test_distant_stops_get_no_footpath(timetable):
+    assert not any(dest == "Z" for dest, _ in timetable.transfers.get("A", []))
+
+
+# --------------------------------------------------------------------- #
+# Routing — the answers here are worked out by hand from conftest.py
+
+def test_direct_journey_no_transfer(timetable):
+    result = plan(timetable, "A", "C", EIGHT_AM)
+    assert result.journeys
+    best = result.best
+    assert best.transfers == 0
+    assert best.arrive == parse_time("08:12")   # A 08:00 -> C 08:12
+    assert [leg.kind for leg in best.legs] == ["ride"]
+
+
+def test_journey_requiring_a_transfer(timetable):
+    """A→E via C: route 1 at 08:00 arrives C 08:12, route 2 departs 08:13."""
+    result = plan(timetable, "A", "E", EIGHT_AM)
+    assert result.journeys
+    fastest = result.best
+    assert fastest.arrive == parse_time("08:27")   # C 08:13 -> E 08:27
+    assert fastest.transfers == 1
+
+
+def test_pareto_returns_the_slower_direct_option_too(timetable):
+    """Route 3 is slower but needs no transfer. Both answers are valid."""
+    result = plan(timetable, "A", "E", EIGHT_AM)
+    transfer_counts = {j.transfers for j in result.journeys}
+    assert 1 in transfer_counts, "should find the fast one-transfer journey"
+    assert 0 in transfer_counts, "should also find the slow direct journey"
+
+    direct = next(j for j in result.journeys if j.transfers == 0)
+    assert direct.arrive == parse_time("08:55")
+    assert direct.arrive > result.best.arrive
+
+
+def test_journeys_are_pareto_optimal(timetable):
+    """No returned journey may be beaten on both arrival time and transfers."""
+    result = plan(timetable, "A", "E", EIGHT_AM)
+    for a in result.journeys:
+        for b in result.journeys:
+            if a is b:
+                continue
+            assert not (b.arrive <= a.arrive and b.transfers < a.transfers), (
+                "a dominated journey survived the Pareto filter"
+            )
+
+
+def test_later_departure_gives_a_later_trip(timetable):
+    """Leaving at 08:05 should catch the 08:10, not time-travel to the 08:00."""
+    result = plan(timetable, "A", "C", parse_time("08:05"))
+    assert result.best.depart >= parse_time("08:05")
+    assert result.best.arrive == parse_time("08:22")
+
+
+def test_unreachable_stop_returns_nothing(timetable):
+    result = plan(timetable, "A", "Z", EIGHT_AM)
+    assert result.journeys == []
+
+
+def test_no_journey_after_the_last_departure(timetable):
+    result = plan(timetable, "A", "C", parse_time("23:00"))
+    assert result.journeys == []
+
+
+def test_walking_transfer_is_used_when_it_helps(timetable):
+    """C2 is only reachable on foot from C, so any journey there must walk."""
+    result = plan(timetable, "A", "C2", EIGHT_AM)
+    assert result.journeys
+    assert any(leg.kind == "walk" for leg in result.best.legs)
+
+
+def test_transfer_limit_is_respected(timetable):
+    """max_rounds=1 means one vehicle, so the transfer journey is excluded."""
+    result = plan(timetable, "A", "E", EIGHT_AM, max_rounds=1)
+    assert all(j.transfers == 0 for j in result.journeys)
+
+
+def test_legs_are_contiguous_and_ordered(timetable):
+    """Each leg must start where the previous ended, and not before it."""
+    result = plan(timetable, "A", "E", EIGHT_AM)
+    for journey in result.journeys:
+        for prev, nxt in zip(journey.legs, journey.legs[1:], strict=False):
+            assert prev.to_stop == nxt.from_stop
+            assert nxt.depart >= prev.arrive
+
+
+def test_journey_starts_at_origin_and_ends_at_destination(timetable):
+    result = plan(timetable, "A", "E", EIGHT_AM)
+    for journey in result.journeys:
+        assert journey.legs[0].from_stop == "A"
+        assert journey.legs[-1].to_stop == "E"
+
+
+def test_summary_and_description_render(timetable, feed):
+    journey = plan(timetable, "A", "E", EIGHT_AM).best
+    assert "min" in journey.summary()
+    lines = journey.describe(feed)
+    assert any("Echo Terminal" in line for line in lines)

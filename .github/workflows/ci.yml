@@ -1,0 +1,32 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.11", "3.12"]
+
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+          cache: pip
+      - name: Install
+        run: pip install -r requirements-dev.txt
+      - name: Lint
+        run: ruff check transitrouter tests scripts
+      - name: Test
+        run: pytest --cov=transitrouter --cov-report=term-missing
+      - name: Smoke test on a generated feed
+        run: |
+          python scripts/make_large_feed.py /tmp/feed --stops 800 --routes 40 --trips-per-route 30
+          journey info /tmp/feed --quiet
+          journey benchmark /tmp/feed --queries 20 --weekday 0 --quiet
