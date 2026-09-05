@@ -273,3 +273,23 @@ def test_plan_rejects_an_unreadable_date(feed_zip, capsys):
                  "--date", "next tuesday", "--quiet"])
     assert code == 2
     assert "unreadable date" in capsys.readouterr().err
+
+
+def test_info_reports_the_feed_validity_window(feed_zip, capsys):
+    assert main(["info", str(feed_zip), "--quiet"]) == 0
+    out = capsys.readouterr().out
+    assert "valid         2026-01-01 to 2027-12-31" in out
+
+
+def test_expired_feed_explains_itself_instead_of_saying_no_route(feed_zip, capsys):
+    """A dated snapshot returning nothing looks like a broken router.
+
+    The sample feed's calendar ends in 2027, so routing in 2030 must say the
+    feed has expired and name the window, not shrug.
+    """
+    code = main(["plan", str(feed_zip), "--from", "A", "--to", "E",
+                 "--at", "08:00", "--date", "2030-01-07", "--quiet"])
+    assert code == 1
+    out = capsys.readouterr().out
+    assert "no service on 2030-01-07" in out
+    assert "2026-01-01" in out and "2027-12-31" in out

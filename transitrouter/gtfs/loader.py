@@ -179,6 +179,28 @@ class Feed:
         service = self.services.get(service_id)
         return True if service is None else service.runs_on(day)
 
+    @property
+    def service_window(self) -> tuple[date | None, date | None]:
+        """The first and last date any service in this feed operates.
+
+        Feeds are snapshots with an expiry — usually a few weeks or months.
+        Routing for a date outside the window correctly returns nothing,
+        which looks exactly like a broken router unless the range is
+        reported, so callers can say what went wrong.
+        """
+        starts = [s.start for s in self.services.values() if s.start]
+        ends = [s.end for s in self.services.values() if s.end]
+        for service in self.services.values():
+            starts.extend(service.added)
+            ends.extend(service.added)
+        return (min(starts) if starts else None, max(ends) if ends else None)
+
+    def covers(self, day: date) -> bool:
+        start, end = self.service_window
+        if start and day < start:
+            return False
+        return not (end and day > end)
+
     def summary(self) -> str:
         stop_times = sum(len(t.stop_ids) for t in self.trips.values())
         return (f"{len(self.stops):,} stops, {len(self.routes):,} routes, "

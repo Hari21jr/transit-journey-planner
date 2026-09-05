@@ -92,6 +92,11 @@ def cmd_info(args) -> int:
     print(f"trips         {len(feed.trips):,}")
     print(f"stop times    {sum(len(t.stop_ids) for t in feed.trips.values()):,}")
     print(f"services      {len(feed.services):,}")
+    start, end = feed.service_window
+    if start or end:
+        window = f"{start or '?'} to {end or '?'}"
+        stale = "" if feed.covers(_today()) else f"  {YELLOW}(expired){RESET}"
+        print(f"valid         {window}{stale}")
     exceptions = sum(len(s.added) + len(s.removed) for s in feed.services.values())
     print(f"date overrides{exceptions:>8,}   "
           f"{DIM}(holiday and one-off service changes){RESET}")
@@ -149,8 +154,18 @@ def cmd_plan(args) -> int:
           f"in {result.rounds_used} rounds{RESET}\n")
 
     if not result.journeys:
-        print("No journey found. The stops may not be connected on this "
-              "service day, or the last vehicle may have gone.")
+        # Distinguish "nothing runs that day" from "no route exists", because
+        # they look identical to the user and have completely different fixes.
+        start, finish = feed.service_window
+        if on_date is not None and not feed.covers(on_date):
+            print(f"This feed has no service on {on_date}. It covers "
+                  f"{start} to {finish} — GTFS feeds are dated snapshots.")
+            print(f"Try:  --date {start}   or download a current feed.")
+        elif not timetable.routes:
+            print(f"No trips run on {when}. Try a different date.")
+        else:
+            print("No journey found. The places may not be connected on this "
+                  "service day, or the last vehicle may have gone.")
         return 1
 
     for i, journey in enumerate(result.journeys):
