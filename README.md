@@ -147,6 +147,9 @@ python scripts/make_large_feed.py /tmp/feed
 journey plan /tmp/feed --from S2929 --to S5195 --at 08:00
 ```
 
+A full walkthrough of every command, with expected output and what each one
+demonstrates, is in [DEMO.md](DEMO.md).
+
 ## Commands
 
 ```
@@ -206,7 +209,7 @@ transitrouter/
 
 ```bash
 pip install -r requirements-dev.txt
-pytest --cov=transitrouter    # 64 tests, 92% coverage
+pytest --cov=transitrouter    # 66 tests, 92% coverage
 ruff check transitrouter tests
 ```
 

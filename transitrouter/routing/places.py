@@ -30,26 +30,46 @@ SAME_NAME_RADIUS_M = 250.0
 # in the name: HURDMAN A, HURDMAN B, HURDMAN C are one station in every sense
 # a traveller cares about. Without this, asking to leave "from Hurdman" is
 # ambiguous between seven places that are all the same place.
-_PLATFORM_SUFFIX = re.compile(
+# A trailing letter, or an explicitly labelled platform.
+_LETTER_OR_LABELLED = re.compile(
     r"""\s+(?:
-          [A-Z]                      # HURDMAN A
-        | (?:PLATFORM|PLATFORME|BAY|QUAI|STOP|STAND)\s*\d+   # ... PLATFORM 3
-        | \d{1,2}                    # TUNNEY'S PASTURE 2
+          [A-Z]                                              # HURDMAN A
+        | (?:PLATFORM|PLATFORME|BAY|QUAI|STAND)\s*\d{1,2}    # BLAIR PLATFORM 3
     )$""",
     re.IGNORECASE | re.VERBOSE,
 )
+
+# A bare trailing number, which is far more dangerous — see below.
+_BARE_NUMBER = re.compile(r"\s+\d{1,2}$")
+
+MIN_STEM_CHARS = 4
+# A bare number is only a platform designator when what precedes it is
+# substantial. "TUNNEY'S PASTURE 2" is a platform; "Stop 12" is a stop's
+# whole name, and stripping it collapses every numbered stop in the feed
+# into one place. Requiring a longer, multi-word stem separates the two.
+MIN_BARE_NUMBER_STEM_CHARS = 10
 
 
 def normalise_name(name: str) -> str:
     """Strip a trailing platform designator, if removing it leaves a name.
 
-    Deliberately conservative: only one suffix is removed, and only when at
-    least four characters survive. "RIDEAU / FRIEL" and "RIDEAU / NELSON"
-    keep their distinct names and stay separate places, which is correct —
+    Deliberately conservative in both directions. "RIDEAU / FRIEL" and
+    "RIDEAU / NELSON" keep their distinct names and stay separate places —
     they are different corners, not platforms of one station.
     """
-    stripped = _PLATFORM_SUFFIX.sub("", name.strip())
-    return (stripped if len(stripped) >= 4 else name.strip()).lower()
+    name = name.strip()
+
+    stripped = _LETTER_OR_LABELLED.sub("", name)
+    if stripped != name and len(stripped) >= MIN_STEM_CHARS:
+        return stripped.lower()
+
+    stripped = _BARE_NUMBER.sub("", name)
+    if (stripped != name
+            and len(stripped) >= MIN_BARE_NUMBER_STEM_CHARS
+            and " " in stripped.strip()):
+        return stripped.lower()
+
+    return name.lower()
 
 
 @dataclass

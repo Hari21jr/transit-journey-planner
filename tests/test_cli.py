@@ -380,3 +380,33 @@ def test_far_apart_lettered_stops_are_not_merged(tmp_path):
 
     places = build_places(load_feed(d))
     assert len(places) == 2
+
+
+def test_a_bare_number_is_only_stripped_from_a_substantial_name():
+    """'Stop 12' is a whole name; 'TUNNEY'S PASTURE 2' is a platform.
+
+    Stripping bare numbers indiscriminately collapses every numbered stop in
+    a feed into a single place — which is exactly what happened before this
+    guard existed.
+    """
+    from transitrouter.routing.places import normalise_name
+
+    assert normalise_name("Stop 12") == "stop 12"
+    assert normalise_name("Bay 7") == "bay 7"
+    assert normalise_name("TUNNEY'S PASTURE 2") == "tunney's pasture"
+    assert normalise_name("BLAIR PLATFORM 3") == "blair"
+    assert normalise_name("HURDMAN A") == "hurdman"
+
+
+def test_numbered_stops_stay_separate_places(tmp_path):
+    from transitrouter.gtfs.loader import load_feed
+    from transitrouter.routing.places import build_places
+
+    d = _write_feed(tmp_path / "feed",
+        "stop_id,stop_name,stop_lat,stop_lon\n"
+        "S10,Stop 10,45.40000,-75.69000\n"
+        "S11,Stop 11,45.40010,-75.69010\n"
+        "S12,Stop 12,45.40020,-75.69020\n")
+
+    places = build_places(load_feed(d))
+    assert len(places) == 3, "numbered stops must not collapse into one place"
