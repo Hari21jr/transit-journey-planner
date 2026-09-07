@@ -26,6 +26,15 @@ DEFAULT_MAX_WALK_M = 400.0
 # Time cost of getting off one vehicle and onto another at the same stop.
 MIN_TRANSFER_SECONDS = 60
 
+# Straight-line distance is not walking distance. You follow streets and
+# cross at corners, so the route you actually walk is longer than the crow
+# flies — by about a third in a normal street grid, and much more where a
+# river, railway or highway forces a detour. Without this correction every
+# walking leg is quietly optimistic, which is the failure mode that makes
+# someone miss a bus. 1.3 is the usual figure from the routing literature
+# and roughly what a street-network router returns for short urban trips.
+STREET_DETOUR_FACTOR = 1.3
+
 
 def haversine(lat1: float, lon1: float, lat2: float, lon2: float) -> float:
     """Great-circle distance in metres."""
@@ -37,7 +46,14 @@ def haversine(lat1: float, lon1: float, lat2: float, lon2: float) -> float:
 
 
 def walk_seconds(metres: float) -> int:
-    return max(MIN_TRANSFER_SECONDS, int(metres / WALK_SPEED_MS))
+    """Seconds to walk a straight-line distance of ``metres``.
+
+    The detour factor is applied here rather than at the call sites so that
+    every walking leg — transfers, and the walk from an address — is costed
+    the same way.
+    """
+    return max(MIN_TRANSFER_SECONDS,
+               int(metres * STREET_DETOUR_FACTOR / WALK_SPEED_MS))
 
 
 def build_transfers(

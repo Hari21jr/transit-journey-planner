@@ -22,7 +22,7 @@ Reference: Delling, Pajor & Werneck, "Round-Based Public Transit Routing"
 
 from __future__ import annotations
 
-from collections.abc import Iterable
+from collections.abc import Iterable, Mapping
 from dataclasses import dataclass
 
 from .journey import Journey, Leg
@@ -57,10 +57,30 @@ class RaptorResult:
         return self.journeys[0] if self.journeys else None
 
 
+Endpoint = str | Iterable[str] | Mapping[str, int]
+
+
+def _endpoint(value: Endpoint) -> dict[str, int]:
+    """Normalise an endpoint to ``{stop_id: walk_seconds}``.
+
+    A bare stop id or a collection of them costs nothing to reach or leave —
+    that is the station case, where the traveller is already on the platform.
+    A mapping carries a per-stop walk, which is what an address needs: the
+    stop at the end of the street and the one four blocks away are not
+    reachable at the same moment, and seeding both at the query time would
+    invent journeys that cannot be caught.
+    """
+    if isinstance(value, str):
+        return {value: 0} if value else {}
+    if isinstance(value, Mapping):
+        return {s: max(0, int(w)) for s, w in value.items() if s}
+    return {s: 0 for s in value if s}
+
+
 def plan(
     timetable: Timetable,
-    origin: str | Iterable[str],
-    destination: str | Iterable[str],
+    origin: Endpoint,
+    destination: Endpoint,
     departure_time: int,
     max_rounds: int = 5,
     max_initial_walk: bool = True,
@@ -68,10 +88,12 @@ def plan(
     """Find journeys from ``origin`` to ``destination`` departing no earlier
     than ``departure_time`` (seconds since midnight).
 
-    Both endpoints accept either a single stop id or a collection of them.
-    A named place such as a station is a set of platform stops, and the
-    traveller does not care which one they leave from — so all of them are
-    seeded at once and the search picks whichever turns out to be best.
+    Both endpoints accept a single stop id, a collection of them, or a
+    mapping of stop id to the seconds spent walking to or from it. A named
+    place such as a station is a set of platform stops the traveller does
+    not choose between, so all of them are seeded at once and the search
+    picks whichever turns out best; an address is the same idea with a
+    walking cost attached to each.
 
     Returns one journey per transfer count, so the caller can choose between
     "fastest" and "fewest changes" rather than being handed a single answer.
@@ -80,39 +102,40 @@ def plan(
     stop_routes = timetable.stop_routes
     footpaths = timetable.transfers
 
-    origins = {origin} if isinstance(origin, str) else set(origin)
-    targets = {destination} if isinstance(destination, str) else set(destination)
-    origins.discard("")
-    targets.discard("")
+    origins = _endpoint(origin)
+    targets = _endpoint(destination)
 
-    if not origins or not targets or origins & targets:
+    if not origins or not targets or origins.keys() & targets.keys():
         return RaptorResult([], 0, 0)
     if not any(o in stop_routes or o in footpaths for o in origins):
         return RaptorResult([], 0, 0)
 
     # best[p]: earliest known arrival at p by any number of trips.
-    best: dict[str, int] = dict.fromkeys(origins, departure_time)
+    best: dict[str, int] = {s: departure_time + w for s, w in origins.items()}
     # labels[k][p]: earliest arrival at p using at most k trips.
-    labels: list[dict[str, int]] = [dict.fromkeys(origins, departure_time)]
+    labels: list[dict[str, int]] = [dict(best)]
     parents: list[dict[str, _Board]] = [{}]
 
     marked: set[str] = set(origins)
 
-    # The best arrival at any target, cached rather than recomputed. This is
-    # read once per stop scanned — millions of times on a real feed — so a
-    # min() over the target set here is measurably slower than maintaining it.
+    # The best *door* arrival at the destination — the arrival at a target
+    # stop plus the walk from it — cached rather than recomputed. This is
+    # read once per stop scanned, millions of times on a real feed, so a
+    # min() over the target set here is measurably slower than maintaining
+    # it. Pruning against the door arrival stays correct because every
+    # egress walk is non-negative.
     target_bound = INF
 
     # Walking from the origin before boarding anything is allowed, and is
     # often the difference between a sensible journey and a silly one.
     if max_initial_walk:
-        for start in origins:
+        for start, access in origins.items():
             for near, seconds in footpaths.get(start, ()):
-                arrival = departure_time + seconds
+                arrival = departure_time + access + seconds
                 if arrival < best.get(near, INF):
                     best[near] = arrival
-                    if near in targets and arrival < target_bound:
-                        target_bound = arrival
+                    if near in targets:
+                        target_bound = min(target_bound, arrival + targets[near])
                     labels[0][near] = arrival
                     parents[0][near] = _Board("walk", start, walk_seconds=seconds)
                     marked.add(near)
@@ -153,8 +176,8 @@ def plan(
                     # cannot be part of an optimal journey.
                     if arrival < min(best.get(stop, INF), target_bound):
                         best[stop] = arrival
-                        if stop in targets and arrival < target_bound:
-                            target_bound = arrival
+                        if stop in targets:
+                            target_bound = min(target_bound, arrival + targets[stop])
                         labels[k][stop] = arrival
                         parents[k][stop] = _Board(
                             "ride", route.stops[board_position],
@@ -187,8 +210,8 @@ def plan(
                 arrival = base + seconds
                 if arrival < best.get(near, INF):
                     best[near] = arrival
-                    if near in targets and arrival < target_bound:
-                        target_bound = arrival
+                    if near in targets:
+                        target_bound = min(target_bound, arrival + targets[near])
                     labels[k][near] = arrival
                     parents[k][near] = _Board("walk", stop, walk_seconds=seconds)
                     marked.add(near)
@@ -197,9 +220,12 @@ def plan(
         # arriving at whichever target stop is reached earliest.
         reached = [t for t in targets if t in labels[k]]
         if reached:
-            arrival_stop = min(reached, key=lambda t: labels[k][t])
+            # Whichever target stop gets you to the door soonest, not
+            # whichever the vehicle reaches soonest — a stop reached two
+            # minutes earlier but five minutes further to walk is worse.
+            arrival_stop = min(reached, key=lambda t: labels[k][t] + targets[t])
             journey = _reconstruct(timetable, labels, parents, k,
-                                   origins, arrival_stop)
+                                   set(origins), arrival_stop)
             if journey and journey.legs:
                 journeys.append(journey)
 
@@ -274,6 +300,8 @@ def _reconstruct(
                 headsign=trip.headsign if trip else "",
                 trip_id=trip_id,
                 intermediate_stops=board.alight_position - board.board_position,
+                stop_ids=list(route.stops[board.board_position:
+                                          board.alight_position + 1]),
             ))
             stop = board.from_stop
             k -= 1

@@ -21,7 +21,11 @@ classifiers = [
 dependencies = []
 
 [project.optional-dependencies]
-dev = ["pytest>=8.3", "pytest-cov>=5.0", "ruff>=0.6"]
+# The web planner is the one thing that needs a third-party package, so it
+# is an extra rather than a dependency: `pip install transitrouter` still
+# pulls in nothing at all.
+web = ["Flask>=3.0,<4"]
+dev = ["pytest>=8.3", "pytest-cov>=5.0", "ruff>=0.6", "Flask>=3.0,<4"]
 
 [project.scripts]
 journey = "transitrouter.cli:main"
@@ -31,3 +35,8 @@ Repository = "https://github.com/Hari21jr/transit-journey-planner"
 
 [tool.setuptools.packages.find]
 include = ["transitrouter*"]
+
+# The HTML template is not a .py file, so it is not installed unless it is
+# named here. An installed copy would render a blank page without it.
+[tool.setuptools.package-data]
+transitrouter = ["web/templates/*.html"]

@@ -21,7 +21,7 @@ The feed's schedule covers summer 2024, so every routing command below passes
 pytest
 ```
 
-**Expect:** `66 passed` in under a second.
+**Expect:** `115 passed` in under two seconds.
 
 **Proves:** the algorithm is verified against a seven-stop network small
 enough that every optimal journey was worked out by hand. Correctness tests,
@@ -230,6 +230,55 @@ journey benchmark C:\Users\you\feed --queries 200 --weekday 0
 
 ---
 
+## 7. The web planner
+
+```powershell
+pip install -e ".[web]"
+journey serve $FEED
+```
+
+```
+journey planner → http://127.0.0.1:8000
+ * Running on http://127.0.0.1:8000
+```
+
+The feed loads once at startup — the same ~9 seconds the CLI spends — and is
+then held in memory, so queries answer in milliseconds. Open the address in a
+browser and you get:
+
+- **Autocomplete** on both boxes, backed by `/api/places`. Debounced, because
+  a request per keystroke fires a dozen for one word.
+- **Two itineraries** side by side, tagged *fastest* and *fewest changes*,
+  each broken into legs with route numbers, walk times and the arrival.
+- **The journey drawn on a map.** Every stop the vehicle calls at is plotted,
+  so the line follows the road; walking legs are dashed. Click the other
+  itinerary and the map redraws.
+- **`Solved in 6 ms · 608 stops reached in 5 rounds`** under the form, so the
+  algorithm is visible rather than hidden behind the UI.
+- **A 24h / 12h switch**, which re-renders from the raw seconds the API
+  already sends rather than re-querying.
+- **A header that says whether the schedule is current**, so an archived
+  snapshot reads as a stated fact rather than a page stuck in the past.
+
+Things worth trying, because they're the parts that usually break:
+
+| Try | What should happen |
+|---|---|
+| Type a street address, e.g. `47 Huntcliff Place` | it geocodes, walks you to the nearest stops, and the walk from the door is the first leg |
+| Type `Rideau` and submit | 409 — the name is ambiguous, so it lists the candidates as buttons; clicking one re-plans |
+| Type `Atlantis` | 404 — "No stop matches" |
+| Set the date outside the feed window | 400 explaining the feed is a dated snapshot, with the range it covers |
+| Set **Most vehicles** to 1 | only zero-transfer itineraries come back |
+| Hit the swap arrows | endpoints reverse and it re-plans |
+| Block `unpkg.com` in devtools and reload | the map says it's unavailable; the itineraries still render |
+| Block `nominatim.openstreetmap.org` and search an address | address lookup fails cleanly; stop names keep working |
+
+**What this proves:** the router isn't a script that only its author can run.
+Someone who has never heard of GTFS can use it, and the API underneath
+(`/api/places`, `/api/plan`) is the shape you'd build a real front end on.
+
+---
+
 ## The two-minute version
 
 If someone gives you two minutes, run exactly three commands:
@@ -242,3 +291,6 @@ journey benchmark $FEED --queries 200 --date 2024-07-15
 
 Two million rows read, two optimal itineraries across Ottawa in 32ms, and 200
 queries measured to prove it wasn't a fluke.
+
+If they have a screen in front of them instead, `journey serve $FEED` and plan
+Hurdman → Rideau in the browser.

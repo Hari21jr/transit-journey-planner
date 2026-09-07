@@ -31,6 +31,22 @@ class GtfsError(Exception):
     """Raised when a feed is missing files or is structurally unusable."""
 
 
+def _hex_colour(value: str | None) -> str:
+    """GTFS colours are six hex digits with no leading ``#``.
+
+    Feeds are inconsistent about it, and one bad field should not reach a
+    stylesheet as an arbitrary string.
+    """
+    text = (value or "").strip().lstrip("#")
+    if len(text) != 6:
+        return ""
+    try:
+        int(text, 16)
+    except ValueError:
+        return ""
+    return f"#{text.lower()}"
+
+
 def parse_time(value: str) -> int:
     """``"25:10:00"`` -> 90600. Returns -1 for a blank time.
 
@@ -99,10 +115,22 @@ class Route:
     short_name: str
     long_name: str
     type: int = 3  # 3 = bus, per the GTFS spec
+    # Agencies publish their own livery colours. Using them makes a route
+    # badge recognisable at a glance — an O-Train line reads as the line it
+    # is rather than as another numbered bus.
+    color: str = ""
+    text_color: str = ""
 
     @property
     def label(self) -> str:
         return self.short_name or self.long_name or self.id
+
+    @property
+    def mode(self) -> str:
+        """GTFS route_type, reduced to the words a rider would use."""
+        return {0: "tram", 1: "metro", 2: "rail", 3: "bus",
+                4: "ferry", 5: "tram", 6: "gondola", 7: "funicular"}.get(
+                    self.type, "bus")
 
 
 @dataclass
@@ -285,6 +313,8 @@ def load_feed(path: str | Path, progress=None) -> Feed:
                 short_name=(row.get("route_short_name") or "").strip(),
                 long_name=(row.get("route_long_name") or "").strip(),
                 type=int(row.get("route_type") or 3),
+                color=_hex_colour(row.get("route_color")),
+                text_color=_hex_colour(row.get("route_text_color")),
             )
 
     # ---- trips -------------------------------------------------------- #

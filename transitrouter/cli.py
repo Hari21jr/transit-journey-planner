@@ -4,6 +4,7 @@
     journey stops     FEED.zip --search "rideau"
     journey plan      FEED.zip --from 3009 --to 8767 --at 17:30
     journey benchmark FEED.zip --queries 200
+    journey serve     FEED.zip --port 8000
 """
 
 from __future__ import annotations
@@ -210,6 +211,21 @@ def cmd_benchmark(args) -> int:
     return 0
 
 
+def cmd_serve(args) -> int:
+    """Serve the web planner. Flask is an optional extra, not a dependency."""
+    try:
+        from .web.app import create_app
+    except ImportError:
+        print("the web UI needs Flask, which is an optional extra.\n"
+              '  pip install -e ".[web]"', file=sys.stderr)
+        return 2
+
+    app = create_app(args.feed, max_walk=args.max_walk)
+    print(f"{BOLD}journey planner{RESET} → http://{args.host}:{args.port}")
+    app.run(host=args.host, port=args.port, debug=False)
+    return 0
+
+
 # --------------------------------------------------------------------- #
 
 def build_parser() -> argparse.ArgumentParser:
@@ -253,6 +269,11 @@ def build_parser() -> argparse.ArgumentParser:
     b.add_argument("--max-rounds", type=int, default=5)
     b.add_argument("--seed", type=int, default=42)
     b.set_defaults(func=cmd_benchmark)
+
+    sv = common(sub.add_parser("serve", help="web planner with a map"))
+    sv.add_argument("--host", default="127.0.0.1")
+    sv.add_argument("--port", type=int, default=8000)
+    sv.set_defaults(func=cmd_serve)
 
     return p
 

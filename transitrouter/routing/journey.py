@@ -22,6 +22,10 @@ class Leg:
     headsign: str = ""
     trip_id: str = ""
     intermediate_stops: int = 0
+    # Every stop the leg passes through, in order. Needed to draw the leg on
+    # a map: a straight line from boarding to alighting would cut across the
+    # city rather than follow the road.
+    stop_ids: list[str] = field(default_factory=list)
 
     @property
     def duration(self) -> int:

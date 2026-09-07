@@ -410,3 +410,73 @@ def test_numbered_stops_stay_separate_places(tmp_path):
 
     places = build_places(load_feed(d))
     assert len(places) == 3, "numbered stops must not collapse into one place"
+
+
+def test_serve_is_a_registered_subcommand():
+    """The web UI is only reachable through the CLI; losing the wiring
+    silently would leave `journey serve` telling the user it doesn't exist."""
+    from transitrouter.cli import build_parser
+
+    args = build_parser().parse_args(["serve", "feed.zip", "--port", "9000"])
+    assert args.command == "serve"
+    assert args.port == 9000
+    assert args.host == "127.0.0.1"  # not exposed to the network by default
+
+
+# --- searching by name the way people actually type it ----------------- #
+
+def _named(*names) -> dict:
+    """Places keyed by name, as build_places would produce them."""
+    from transitrouter.routing.places import Place, fold
+
+    return {n: Place(id=n, name=n, stop_ids=[n], search_key=fold(n))
+            for n in names}
+
+
+OTTAWA_NAMES = [
+    "RIDEAU / CHARLOTTE", "RIDEAU / NELSON", "ST-LAURENT",
+    "TUNNEY'S PASTURE", "PLACE D'ORLÉANS", "HURDMAN", "BANK / SOMERSET",
+]
+
+
+@pytest.mark.parametrize("typed, expected", [
+    ("rideau charlotte", "RIDEAU / CHARLOTTE"),   # punctuation between words
+    ("charlotte rideau", "RIDEAU / CHARLOTTE"),   # nobody remembers the order
+    ("st laurent", "ST-LAURENT"),                 # hyphen typed as a space
+    ("ST LAURENT", "ST-LAURENT"),                 # and in caps
+    ("tunneys pasture", "TUNNEY'S PASTURE"),      # dropped apostrophe
+    ("place d orleans", "PLACE D'ORLÉANS"),       # dropped accent
+    ("hurdman", "HURDMAN"),
+])
+def test_names_resolve_the_way_people_type_them(typed, expected):
+    """A search box that only matches the exact punctuation is only useful
+    to someone who already knows the answer."""
+    from transitrouter.routing.places import search_places
+
+    found = search_places(_named(*OTTAWA_NAMES), typed)
+    assert found, f"{typed!r} matched nothing"
+    assert found[0].name == expected
+
+
+def test_a_shared_stem_still_returns_both_corners():
+    """Folding must not merge distinct places — it only widens matching."""
+    from transitrouter.routing.places import search_places
+
+    found = search_places(_named(*OTTAWA_NAMES), "rideau")
+    assert {p.name for p in found} == {"RIDEAU / CHARLOTTE", "RIDEAU / NELSON"}
+
+
+def test_word_matching_needs_every_word():
+    from transitrouter.routing.places import search_places
+
+    assert search_places(_named(*OTTAWA_NAMES), "rideau bank") == []
+
+
+def test_an_exact_name_resolves_even_when_others_contain_it(sample_feed_dir):
+    """`Bank` should not be ambiguous just because it is on Bank Street."""
+    from transitrouter.gtfs.loader import load_feed
+    from transitrouter.routing.places import resolve
+
+    feed = load_feed(str(sample_feed_dir))
+    places = _named("BANK", "BANK / SOMERSET", "BANK / GLADSTONE")
+    assert resolve(feed, places, "bank").name == "BANK"

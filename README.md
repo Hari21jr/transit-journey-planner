@@ -6,7 +6,7 @@ No routing library — the algorithm is the project.
 
 [![CI](https://github.com/Hari21jr/transit-journey-planner/actions/workflows/ci.yml/badge.svg)](https://github.com/Hari21jr/transit-journey-planner/actions/workflows/ci.yml)
 ![Python](https://img.shields.io/badge/python-3.11%2B-blue)
-![Coverage](https://img.shields.io/badge/coverage-92%25-brightgreen)
+![Coverage](https://img.shields.io/badge/coverage-90%25-brightgreen)
 ![Dependencies](https://img.shields.io/badge/runtime%20deps-none-brightgreen)
 
 ```
@@ -111,6 +111,13 @@ generated ones, since they know their own stations.
 **Walking is not a transfer.** A journey that walks between two stops still
 counts as one vehicle, which matters for the Pareto comparison.
 
+**Straight-line distance is not walking distance.** You follow streets and
+cross at corners, so the walk is about a third longer than the crow flies.
+Costing walks at the straight-line distance makes every walking leg quietly
+optimistic, which is exactly the error that makes someone miss a bus, so a
+1.3 detour factor is applied to every one. It is still an approximation:
+see the limitations below.
+
 **Time is measured from when you asked, not from when the bus moves.** The
 direct route above is a 24-minute ride — but it leaves in 28 minutes, so it
 delivers you 25 minutes later than the option with a change in it. Reporting
@@ -129,10 +136,13 @@ python -m venv .venv
 pip install -e .
 ```
 
-Then point it at a GTFS feed — a `.zip` or an unzipped directory. Ottawa's is
-at [OC Transpo's developer portal](https://www.octranspo.com/en/plan-your-trip/travel-tools/developers/);
-almost every agency publishes one, and hundreds are indexed at the
-[Mobility Database](https://mobilitydatabase.org).
+Then point it at a GTFS feed — a `.zip` or an unzipped directory. Ottawa's
+current one is at [OC Transpo's developer portal](https://www.octranspo.com/en/plan-your-trip/travel-tools/developers/)
+or as [mdb-2154](https://mobilitydatabase.org/feeds/gtfs/mdb-2154) on the
+[Mobility Database](https://mobilitydatabase.org), which indexes hundreds of
+agencies. Feeds are dated snapshots covering a few weeks, so grab a current
+one rather than an archived version — the planner will tell you the window
+either way, but an expired feed can only route in the past.
 
 ```bash
 journey info  feed.zip
@@ -150,6 +160,42 @@ journey plan /tmp/feed --from S2929 --to S5195 --at 08:00
 A full walkthrough of every command, with expected output and what each one
 demonstrates, is in [DEMO.md](DEMO.md).
 
+## Web planner
+
+```bash
+pip install -e ".[web]"
+journey serve feed.zip          # http://127.0.0.1:8000
+```
+
+Type a place, get itineraries, see the route drawn on a map. Every stop the
+vehicle calls at is plotted, so the line follows the road rather than cutting
+across the city; walking legs are dotted, and route lines take the agency's
+own livery colour from `route_color`. Clicking an itinerary redraws it.
+Times can be shown on a 24- or 12-hour clock, and the header states whether
+the loaded schedule is current or an archived snapshot.
+
+**You can also type a street address.** A GTFS feed has no idea where anyone
+lives — `47 Huntcliff Place` is not in the data under any spelling — so
+addresses are geocoded through OpenStreetMap's Nominatim, bounded to the
+feed's own area, then every stop within an 800m walk is seeded into the
+search at once. That is the same mechanism stations already use: a set of
+boarding options the traveller does not choose between. The difference is
+that each one carries its own walking time, because the stop at the end of
+the street and the one four blocks away cannot be reached at the same moment.
+
+The walk from the door is part of the journey, so it is shown and counted,
+and the departure time given is when to *leave the house* rather than when
+the bus goes. Consecutive walking legs are merged — "walk 6 min to one stop,
+then 2 min to another" is not a route anyone would follow.
+
+Flask is an optional extra rather than a dependency, because the router
+having none is worth keeping true, and geocoding is the only part of the
+project that touches the network. It fails soft: if Nominatim is slow,
+down, or blocked, address lookup stops working and everything else carries
+on. The map library is loaded from a CDN and the page survives it not
+loading too — the itineraries still render, which matters on a locked-down
+network.
+
 ## Commands
 
 ```
@@ -158,6 +204,7 @@ journey stops     FEED   --search TEXT [--limit N]
 journey plan      FEED   --from PLACE --to PLACE [--at HH:MM]
                          [--date YYYY-MM-DD] [--weekday 0-6] [--max-rounds N]
 journey benchmark FEED   [--queries N] [--at HH:MM] [--seed N]
+journey serve     FEED   [--host H] [--port N]
 ```
 
 `--from` and `--to` take a place id, a raw stop id, or an unambiguous name. An
@@ -202,6 +249,9 @@ transitrouter/
 │   ├── transfers.py    generated walking footpaths via a grid index
 │   ├── raptor.py       the round-based search and journey reconstruction
 │   └── journey.py      itinerary types and formatting
+├── web/
+│   ├── app.py          Flask front end; feed held in memory, timetables cached
+│   └── geocode.py      address lookup, and the stops within walking distance
 └── cli.py
 ```
 
@@ -209,7 +259,7 @@ transitrouter/
 
 ```bash
 pip install -r requirements-dev.txt
-pytest --cov=transitrouter    # 66 tests, 92% coverage
+pytest --cov=transitrouter    # 115 tests, 90% coverage
 ruff check transitrouter tests
 ```
 
@@ -225,9 +275,11 @@ optimality is checked rather than assumed.
 - **Departure-time queries only.** No "arrive by 09:00" search, which needs
   the algorithm run backwards.
 - **No real-time data.** Everything is scheduled time; delays are invisible.
-- **Straight-line walking.** Footpaths ignore rivers, railways and buildings,
-  so a 400m transfer across the Rideau Canal will be proposed where no bridge
-  exists.
+- **Straight-line walking.** Distances are corrected by a flat detour factor
+  rather than routed over a street network, so footpaths still ignore rivers,
+  railways and buildings — a 400m transfer across the Rideau Canal will be
+  proposed where no bridge exists. Fixing it properly means pulling in OSM
+  street geometry, which is a larger project than the router itself.
 - **No fare or accessibility filtering.**
 
 ## Licence

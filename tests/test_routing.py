@@ -227,3 +227,21 @@ def test_wait_is_reported_in_the_summary(timetable):
 def test_no_wait_is_not_mentioned(timetable):
     journey = plan(timetable, "A", "C", EIGHT_AM).best
     assert "wait" not in journey.summary(EIGHT_AM)
+
+
+def test_walking_time_allows_for_following_streets():
+    """Straight-line distance underestimates a walk: you cross at corners.
+    A 400m hop is not a 5-minute walk at 4.8km/h, it is closer to 6½."""
+    from transitrouter.routing.transfers import WALK_SPEED_MS, walk_seconds
+
+    straight_line = 400 / WALK_SPEED_MS
+    assert walk_seconds(400) > straight_line
+    assert 350 < walk_seconds(400) < 420
+
+
+def test_a_very_short_hop_still_costs_the_transfer_floor():
+    """Two stops on opposite kerbs are 20m apart; getting off one bus and
+    onto another is never instant, whatever the distance says."""
+    from transitrouter.routing.transfers import MIN_TRANSFER_SECONDS, walk_seconds
+
+    assert walk_seconds(5) == MIN_TRANSFER_SECONDS
