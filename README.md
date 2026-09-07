@@ -108,6 +108,16 @@ grid index — comparing all stops to all stops would be 36 million distance
 calculations for a 6,000-stop feed. Agency-declared transfer times override
 generated ones, since they know their own stations.
 
+**Two million stop times fit in about 110MB.** The obvious representation
+costs five times that, and the two reasons are worth knowing. Parsing a CSV
+row produces a *new* string for its `stop_id`, so keeping it stores one
+string object per stop-time rather than one per stop — 2.7 million objects
+where 5,800 would do. And a Python list of ints costs an 8-byte pointer plus
+a 28-byte int object per entry, where a signed 32-bit `array` costs four.
+Reusing the canonical stop id and storing times in typed arrays took the
+Ottawa feed from around 750MB to 160MB, which is the difference between
+fitting in a small container and not.
+
 **Walking is not a transfer.** A journey that walks between two stops still
 counts as one vehicle, which matters for the Pareto comparison.
 
@@ -196,6 +206,33 @@ on. The map library is loaded from a CDN and the page survives it not
 loading too — the itineraries still render, which matters on a locked-down
 network.
 
+### Deploying it
+
+```bash
+docker build -t journey .
+docker run -p 8000:8000 journey
+```
+
+The image downloads a feed at build time rather than carrying one in the
+repository — 55MB of CSV that changes every few weeks belongs in neither
+git history nor a release. Point it at another agency with
+`--build-arg FEED_URL=...`.
+
+There is a [`render.yaml`](render.yaml) for [Render](https://render.com),
+so the service is reproducible from the repo instead of from remembered
+dashboard settings. Two things shape the runtime configuration:
+
+- **One worker, eight threads.** Each worker holds its own copy of the
+  feed, so a second one doubles the memory for no benefit — a query is
+  milliseconds of CPU, so threads absorb concurrency perfectly well.
+- **A raised timeout.** Startup parses the whole feed before binding the
+  port, which takes around ten seconds; gunicorn's 30-second default is
+  uncomfortably close to that.
+
+`/healthz` reports the loaded feed and its service window. Free hosting
+tiers sleep after a quiet spell, so pointing a free uptime pinger at it
+keeps the first click fast.
+
 ## Commands
 
 ```
@@ -222,6 +259,7 @@ On OC Transpo's published feed for Ottawa, single-threaded:
 | Feed | 5,791 stops · 204 routes · 54,358 trips · **2,014,198 stop times** |
 | Parse | 9.4 s |
 | Build routing structures | 0.5 s |
+| Resident memory | ~110 MB |
 | | 891 routing patterns · 4,111 places · 53,018 footpaths |
 
 200 random origin/destination pairs on that feed, departing 08:00, no caching
@@ -259,7 +297,7 @@ transitrouter/
 
 ```bash
 pip install -r requirements-dev.txt
-pytest --cov=transitrouter    # 115 tests, 90% coverage
+pytest --cov=transitrouter    # 118 tests, 90% coverage
 ruff check transitrouter tests
 ```
 

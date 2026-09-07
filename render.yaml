@@ -1,0 +1,18 @@
+# Render blueprint. Committing this means the service is reproducible from
+# the repository rather than from remembered dashboard settings.
+#
+# The free plan sleeps after 15 minutes without traffic, so the first
+# request after a quiet spell waits for a cold start plus the feed parse.
+# That is the price of free; a paid instance does not sleep.
+
+services:
+  - type: web
+    name: transit-journey-planner
+    runtime: docker
+    plan: free
+    region: ohio
+    dockerfilePath: ./Dockerfile
+    healthCheckPath: /healthz
+    envVars:
+      - key: FEED_PATH
+        value: /data/feed.zip

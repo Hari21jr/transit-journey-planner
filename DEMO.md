@@ -21,7 +21,7 @@ The feed's schedule covers summer 2024, so every routing command below passes
 pytest
 ```
 
-**Expect:** `115 passed` in under two seconds.
+**Expect:** `118 passed` in under two seconds.
 
 **Proves:** the algorithm is verified against a seven-stop network small
 enough that every optimal journey was worked out by hand. Correctness tests,

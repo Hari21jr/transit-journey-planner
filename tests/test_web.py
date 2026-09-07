@@ -259,3 +259,24 @@ def test_the_page_says_whether_the_schedule_is_current(client):
     opens on a 2024 date looks like one."""
     body = client.get("/").data.decode()
     assert "Schedule current" in body or "Schedule snapshot" in body
+
+
+def test_healthz_reports_a_loaded_feed(client):
+    """The host uses this to decide the service is up, and an uptime pinger
+    hits it to keep a free instance awake."""
+    data = client.get("/healthz").get_json()
+    assert data["ok"] is True
+    assert data["stops"] > 0
+    assert data["stop_times"] > 0
+    assert data["service"][0] and data["service"][1]
+
+
+def test_wsgi_entry_point_reads_the_feed_from_the_environment(sample_feed_dir,
+                                                              monkeypatch):
+    """A container has no command line to pass the feed path on."""
+    import importlib
+
+    monkeypatch.setenv("FEED_PATH", str(sample_feed_dir))
+    module = importlib.import_module("transitrouter.web.wsgi")
+    module = importlib.reload(module)
+    assert module.app.test_client().get("/healthz").get_json()["ok"] is True

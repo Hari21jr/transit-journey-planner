@@ -66,6 +66,9 @@ def create_app(feed_path: str, max_walk: float = 400.0,
     if geocoder is None:
         geocoder = Geocoder(feed)
     load_seconds = time.perf_counter() - started
+    # Counted once. It is only a display figure, and walking every trip on
+    # each request would be silly for something that cannot change.
+    stop_time_count = sum(len(t.stop_ids) for t in feed.trips.values())
 
     # Timetables are per service date and cost ~0.4s to build, so they are
     # cached rather than rebuilt on every query.
@@ -262,7 +265,7 @@ def create_app(feed_path: str, max_walk: float = 400.0,
                 "places": len(places),
                 "routes": len(feed.routes),
                 "trips": len(feed.trips),
-                "stop_times": sum(len(t.stop_ids) for t in feed.trips.values()),
+                "stop_times": stop_time_count,
                 "load_seconds": round(load_seconds, 1),
             },
             window={
@@ -276,6 +279,20 @@ def create_app(feed_path: str, max_walk: float = 400.0,
             },
             default_date=default_date().isoformat(),
         )
+
+    @app.route("/healthz")
+    def healthz():
+        """Liveness check for the host, and the endpoint an uptime pinger
+        hits to stop a free instance falling asleep. Deliberately cheap —
+        the feed is already parsed by the time this can be reached."""
+        return jsonify({
+            "ok": True,
+            "stops": len(feed.stops),
+            "stop_times": stop_time_count,
+            "service": [window_start.isoformat() if window_start else None,
+                        window_end.isoformat() if window_end else None],
+            "load_seconds": round(load_seconds, 1),
+        })
 
     @app.route("/api/places")
     def api_places():

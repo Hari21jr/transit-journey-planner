@@ -17,10 +17,20 @@ from __future__ import annotations
 import csv
 import io
 import zipfile
-from collections import defaultdict
+from array import array
 from dataclasses import dataclass, field
 from datetime import date
 from pathlib import Path
+
+
+# Times live in a typed array rather than a Python list. A list of ints
+# costs an 8-byte pointer plus a 28-byte int object per entry; a signed
+# 32-bit array costs four bytes. Across a few million stop times that is
+# the difference between a service that fits in a 512MB container and one
+# that does not. "i" is signed 32-bit, and the largest legal GTFS time is
+# a couple of hundred thousand seconds, so the range is not close.
+def _times() -> array:
+    return array("i")
 
 # GTFS files this router actually reads. Anything else in the zip is ignored.
 REQUIRED = ("stops.txt", "routes.txt", "trips.txt", "stop_times.txt")
@@ -139,11 +149,13 @@ class Trip:
     route_id: str
     service_id: str
     headsign: str = ""
-    # Parallel arrays, in stop sequence order. Kept as lists of primitives
-    # rather than objects because there are millions of these.
+    # Parallel arrays, in stop sequence order. Kept as flat sequences of
+    # primitives rather than an object per stop-time, because there are
+    # millions of these. The stop ids are the very string objects used as
+    # keys in Feed.stops, not copies of them — see the loader.
     stop_ids: list[str] = field(default_factory=list)
-    arrivals: list[int] = field(default_factory=list)
-    departures: list[int] = field(default_factory=list)
+    arrivals: array = field(default_factory=_times)
+    departures: array = field(default_factory=_times)
 
     @property
     def start_time(self) -> int:
@@ -331,13 +343,20 @@ def load_feed(path: str | Path, progress=None) -> Feed:
 
     # ---- stop times (the big one) ------------------------------------- #
     note("reading stop times")
-    # Collected per trip first, then sorted by stop_sequence. Feeds are
-    # usually already ordered, but the spec does not promise it.
-    pending: dict[str, list[tuple[int, str, int, int]]] = defaultdict(list)
+    # Rows go straight into their trip's arrays rather than into a list of
+    # tuples that is then rebuilt. On a real feed that intermediate is a
+    # few million tuples, and it exists only to be sorted.
+    #
+    # The spec does not promise stop_sequence order, but feeds are almost
+    # always already sorted, so order is checked as we go and the reorder
+    # only happens for the trips that actually need it.
+    sequences: dict[str, array] = {}
+    unsorted: set[str] = set()
+
     with reader("stop_times.txt") as fh:
         for row in csv.DictReader(fh):
-            tid = row["trip_id"].strip()
-            if tid not in feed.trips:
+            trip = feed.trips.get(row["trip_id"].strip())
+            if trip is None:
                 continue  # stop_time for a trip we dropped
             arr = parse_time(row.get("arrival_time", ""))
             dep = parse_time(row.get("departure_time", ""))
@@ -347,18 +366,32 @@ def load_feed(path: str | Path, progress=None) -> Feed:
                 arr = dep
             if dep < 0:
                 dep = arr
-            sid = row["stop_id"].strip()
-            if sid not in feed.stops:
+            stop = feed.stops.get(row["stop_id"].strip())
+            if stop is None:
                 continue
-            seq = int(row.get("stop_sequence") or 0)
-            pending[tid].append((seq, sid, arr, dep))
 
-    for tid, entries in pending.items():
-        entries.sort(key=lambda e: e[0])
+            seq = int(row.get("stop_sequence") or 0)
+            seqs = sequences.get(trip.id)
+            if seqs is None:
+                seqs = sequences[trip.id] = array("i")
+            elif seq < seqs[-1]:
+                unsorted.add(trip.id)
+            seqs.append(seq)
+
+            # stop.id, not the string just parsed from this row: they are
+            # equal but distinct objects, and keeping the parsed one means
+            # a separate string per stop-time rather than one per stop.
+            # On Ottawa's feed that is 2.7 million objects instead of 5,800.
+            trip.stop_ids.append(stop.id)
+            trip.arrivals.append(arr)
+            trip.departures.append(dep)
+
+    for tid in unsorted:
         trip = feed.trips[tid]
-        trip.stop_ids = [e[1] for e in entries]
-        trip.arrivals = [e[2] for e in entries]
-        trip.departures = [e[3] for e in entries]
+        order = sorted(range(len(trip.stop_ids)), key=sequences[tid].__getitem__)
+        trip.stop_ids = [trip.stop_ids[i] for i in order]
+        trip.arrivals = array("i", (trip.arrivals[i] for i in order))
+        trip.departures = array("i", (trip.departures[i] for i in order))
 
     # A trip with fewer than two timed stops cannot be ridden.
     feed.trips = {tid: t for tid, t in feed.trips.items() if len(t.stop_ids) >= 2}

@@ -245,3 +245,67 @@ def test_a_very_short_hop_still_costs_the_transfer_floor():
     from transitrouter.routing.transfers import MIN_TRANSFER_SECONDS, walk_seconds
 
     assert walk_seconds(5) == MIN_TRANSFER_SECONDS
+
+
+# --- how stop times are stored ----------------------------------------- #
+
+def test_stop_ids_are_shared_not_copied(sample_feed_dir):
+    """A feed row parses a fresh string per stop-time. Keeping those means
+    one string object per row instead of one per stop — on Ottawa's feed,
+    2.7 million objects instead of 5,800, and a few hundred MB."""
+    from transitrouter.gtfs.loader import load_feed
+
+    feed = load_feed(str(sample_feed_dir))
+    for trip in feed.trips.values():
+        for stop_id in trip.stop_ids:
+            assert stop_id is feed.stops[stop_id].id
+
+
+def test_times_are_stored_in_a_typed_array(sample_feed_dir):
+    """A list of ints costs 36 bytes an entry; a signed 32-bit array costs
+    four. That ratio is what decides whether a real feed fits in memory."""
+    from array import array
+
+    from transitrouter.gtfs.loader import load_feed
+
+    feed = load_feed(str(sample_feed_dir))
+    trip = next(iter(feed.trips.values()))
+    assert isinstance(trip.arrivals, array)
+    assert trip.arrivals.typecode == "i"
+    assert isinstance(trip.departures, array)
+
+
+def test_stop_times_out_of_sequence_are_reordered(tmp_path):
+    """GTFS does not promise stop_times.txt is sorted. Rows are appended in
+    file order for speed, so the out-of-order case has to be caught."""
+    import csv
+
+    from transitrouter.gtfs.loader import load_feed
+
+    def write(name, header, rows):
+        with (tmp_path / name).open("w", newline="", encoding="utf-8") as fh:
+            w = csv.writer(fh)
+            w.writerow(header)
+            w.writerows(rows)
+
+    write("stops.txt", ["stop_id", "stop_name", "stop_lat", "stop_lon"],
+          [["A", "Alpha", 45.42, -75.70], ["B", "Bravo", 45.43, -75.69],
+           ["C", "Charlie", 45.44, -75.68]])
+    write("routes.txt", ["route_id", "route_short_name", "route_type"],
+          [["R1", "1", "3"]])
+    write("trips.txt", ["route_id", "service_id", "trip_id"], [["R1", "S1", "T1"]])
+    write("calendar.txt",
+          ["service_id", "monday", "tuesday", "wednesday", "thursday",
+           "friday", "saturday", "sunday", "start_date", "end_date"],
+          [["S1", 1, 1, 1, 1, 1, 1, 1, "20260101", "20271231"]])
+    # Deliberately shuffled: sequence 3, then 1, then 2.
+    write("stop_times.txt",
+          ["trip_id", "arrival_time", "departure_time", "stop_id", "stop_sequence"],
+          [["T1", "08:20:00", "08:20:00", "C", 3],
+           ["T1", "08:00:00", "08:00:00", "A", 1],
+           ["T1", "08:10:00", "08:10:00", "B", 2]])
+
+    trip = load_feed(str(tmp_path)).trips["T1"]
+    assert trip.stop_ids == ["A", "B", "C"]
+    assert list(trip.arrivals) == [28800, 29400, 30000]
+    assert list(trip.departures) == [28800, 29400, 30000]
