@@ -4,6 +4,11 @@ Plans public transit journeys over any GTFS feed using RAPTOR, returning
 several itineraries that trade travel time against number of transfers.
 No routing library — the algorithm is the project.
 
+**[Try it →](https://transit-journey-planner.onrender.com)** — running on OC
+Transpo's current schedule. Type a stop name or an Ottawa street address.
+It is on a free instance that sleeps when idle, so a first click may take a
+minute to wake.
+
 [![CI](https://github.com/Hari21jr/transit-journey-planner/actions/workflows/ci.yml/badge.svg)](https://github.com/Hari21jr/transit-journey-planner/actions/workflows/ci.yml)
 ![Python](https://img.shields.io/badge/python-3.11%2B-blue)
 ![Coverage](https://img.shields.io/badge/coverage-90%25-brightgreen)
@@ -229,9 +234,14 @@ dashboard settings. Two things shape the runtime configuration:
   port, which takes around ten seconds; gunicorn's 30-second default is
   uncomfortably close to that.
 
-`/healthz` reports the loaded feed and its service window. Free hosting
-tiers sleep after a quiet spell, so pointing a free uptime pinger at it
-keeps the first click fast.
+`/healthz` reports the loaded feed and its service window, and is what an
+uptime pinger hits to stop a free instance sleeping.
+
+Worth knowing before choosing a plan: parsing the Ottawa feed takes about
+**6 seconds on a laptop and 107 on Render's free CPU**. Shared free cores
+are throttled far harder than their specs suggest, and startup is pure
+single-threaded parsing. That difference is the whole argument for keeping
+the instance warm.
 
 ## Commands
 
