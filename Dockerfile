@@ -12,10 +12,9 @@ SHELL ["/bin/bash", "-o", "pipefail", "-c"]
 
 WORKDIR /app
 
-# OC Transpo's current GTFS feed, via the Mobility Database. Override at
-# build time for a different agency:
+# OC Transpo's current GTFS feed, always the latest export. Override at# build time for a different agency:
 #   docker build --build-arg FEED_URL=https://.../toronto.zip .
-ARG FEED_URL=https://files.mobilitydatabase.org/mdb-2154/mdb-2154-202609050023/mdb-2154-202609050023.zip
+ARG FEED_URL=https://oct-gtfs-emasagcnfmcgeham.z01.azurefd.net/public-access/GTFSExport.zip
 
 RUN apt-get update \
  && apt-get install -y --no-install-recommends curl ca-certificates \
