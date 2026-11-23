@@ -85,7 +85,9 @@ def _download(url: str, dest: Path) -> None:
     os.close(fd)
     tmp = Path(tmp_name)
     try:
-        with urllib.request.urlopen(url, timeout=_DOWNLOAD_TIMEOUT_S) as resp:
-            with tmp.open("wb") as out:
-                while chunk := resp.read(1 << 20):
-                    out.write(chunk)
+        with (
+            urllib.request.urlopen(url, timeout=_DOWNLOAD_TIMEOUT_S) as resp,
+            tmp.open("wb") as out,
+        ):
+            while chunk := resp.read(1 << 20):
+                out.write(chunk)
