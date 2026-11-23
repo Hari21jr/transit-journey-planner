@@ -91,3 +91,45 @@ def _download(url: str, dest: Path) -> None:
         ):
             while chunk := resp.read(1 << 20):
                 out.write(chunk)
+        if tmp.stat().st_size == 0:
+            raise OSError("downloaded feed was empty")
+        if feed_end_date(tmp) is None:
+            raise OSError("downloaded file is not a readable GTFS zip")
+        tmp.replace(dest)
+    finally:
+        tmp.unlink(missing_ok=True)
+
+
+def ensure_current_feed(path: str | Path, url: str | None = None,
+                        today: date | None = None) -> Path:
+    """Return a feed path whose service window has not already ended.
+
+    Downloads only when the feed is missing, unreadable, or expired. If a
+    download fails and some feed is already on disk, that one is kept and
+    the error is logged: an expired feed still serves the UI, map and stop
+    search, which is a better failure than refusing to start.
+    """
+    path = Path(path)
+    url = url or os.environ.get("FEED_URL") or DEFAULT_FEED_URL
+    today = today or date.today()
+
+    end = feed_end_date(path) if path.exists() else None
+
+    if end is not None and end >= today:
+        log.info("feed at %s covers through %s, keeping it", path, end)
+        return path
+
+    reason = "missing" if end is None else f"expired on {end}"
+    log.warning("feed %s (%s); downloading from %s", path, reason, url)
+
+    try:
+        _download(url, path)
+    except Exception as exc:  # noqa: BLE001 - startup must not hard-fail
+        if path.exists():
+            log.error("feed refresh failed (%s); continuing with the "
+                      "existing feed", exc)
+            return path
+        raise
+
+    log.info("feed refreshed; now covers through %s", feed_end_date(path))
+    return path
